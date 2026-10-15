@@ -25,7 +25,7 @@
 #    * интеграция App Store Connect yumurta_asc (уже есть, общая);
 #    * сертификат yumurta_dist (уже есть, общий для команды);
 #    * профиль App Store для ru.marketplace.admin под именем
-#      yumurta_admin_appstore (Code signing identities → iOS provisioning
+#      yumurta_admin_appstore1 (Code signing identities → iOS provisioning
 #      profiles). Профиль должен включать Push Notifications.
 # =============================================================================
 
@@ -245,7 +245,7 @@ workflows:
         # Сертификат общий для всей команды (тот же, что у продавца и
         # клиента). Профиль — свой, для ru.marketplace.admin.
         provisioning_profiles:
-          - yumurta_admin_appstore           # ru.marketplace.admin
+          - yumurta_admin_appstore1          # ru.marketplace.admin (так он назвался при загрузке в Codemagic)
         certificates:
           - yumurta_dist
     scripts:
