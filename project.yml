@@ -1,0 +1,51 @@
+name: YumurtaAdmin
+options:
+  bundleIdPrefix: ru.marketplace
+  createIntermediateGroups: true
+# Админ-панель площадки Yumurta на телефоне. Внешних пакетов нет, расширений
+# нет — один таргет приложения. Сборка: XcodeGen → Codemagic (codemagic.yaml),
+# раздача — только TestFlight (внутренние тестировщики), в App Store не уходит.
+targets:
+  YumurtaAdmin:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources: [Sources]
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: Yumurta Admin
+        # ВАЖНО. XcodeGen подставляет в Info.plist своё умолчание
+        # CFBundleShortVersionString = "1.0" и MARKETING_VERSION для этого не
+        # использует. Поэтому версия задаётся ЗДЕСЬ и дублируется в
+        # MARKETING_VERSION ниже. Поднимать версию — в обоих местах.
+        CFBundleShortVersionString: "1.0.0"
+        NSPhotoLibraryUsageDescription: "Галерея нужна, чтобы загружать баннеры и изображения площадки"
+        NSFaceIDUsageDescription: "Face ID защищает админ-панель от посторонних на этом телефоне"
+        UILaunchScreen:
+          UIColorName: LaunchBG
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # remote-notification — тихие push от сервера (когда он научится слать
+        # их приложению админа), fetch — фоновая проверка очередей
+        # (BGAppRefreshTask, см. Sources/Core/Notifier.swift).
+        UIBackgroundModes: [remote-notification, fetch]
+        BGTaskSchedulerPermittedIdentifiers: [ru.marketplace.admin.refresh]
+        ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLName: ru.marketplace.admin
+            CFBundleURLSchemes: [yumurta-admin]
+    entitlements:
+      path: Generated/YumurtaAdmin.entitlements
+      properties:
+        # production — то, чего требует профиль App Store / TestFlight.
+        aps-environment: production
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.marketplace.admin
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: 1
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Manual

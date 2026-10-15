@@ -1,0 +1,271 @@
+# =============================================================================
+#  codemagic.yaml — сборка приложения администратора «Yumurta Admin»
+# -----------------------------------------------------------------------------
+#  Два процесса:
+#
+#    ios-check       Собрать под симулятор без подписи — только проверка, что
+#                    код компилируется. Ничего не подписывает и никуда не шлёт.
+#
+#    ios-testflight  Собрать, подписать и загрузить в App Store Connect. Сборка
+#                    сразу доступна ВНУТРЕННИМ тестировщикам TestFlight.
+#
+#  Процесса «релиз в App Store» здесь нет и не нужно: это внутренний инструмент
+#  администратора площадки, его раздают только через TestFlight. Заявка на
+#  проверку в магазин не создаётся (submit_to_app_store: false), поэтому граблей
+#  «409 whatsNew» и «лимит пяти заявок» у этого приложения не бывает.
+#
+#  Отличия от приложения продавца (7 IOS-seller), с которого взят конфиг:
+#    * один таргет, без расширения push — версию правим в одном Info.plist;
+#    * нет SPM-зависимостей — шаг и кэш SPM убраны;
+#    * App Store ID не зашит: карточку находим по bundle id ru.marketplace.admin;
+#    * текст «Что тестировать» берётся из release-notes/ru.txt (шаг ниже
+#      превращает его в release_notes.json, который читает публикация).
+#
+#  Что нужно в Codemagic до первого запуска ios-testflight:
+#    * интеграция App Store Connect yumurta_asc (уже есть, общая);
+#    * сертификат yumurta_dist (уже есть, общий для команды);
+#    * профиль App Store для ru.marketplace.admin под именем
+#      yumurta_admin_appstore (Code signing identities → iOS provisioning
+#      profiles). Профиль должен включать Push Notifications.
+# =============================================================================
+
+definitions:
+  scripts:
+    - &preflight
+      name: Проверить иконку приложения
+      script: |
+        set -e
+        cd "$CM_BUILD_DIR"
+        ICONSET="Sources/Assets.xcassets/AppIcon.appiconset"
+        # Без иконки 1024x1024 Apple отклонит загрузку уже ПОСЛЕ сборки —
+        # падаем здесь за секунду. Как добавить иконку — README.md.
+        if ! grep -q '"filename"' "$ICONSET/Contents.json" 2>/dev/null; then
+          echo "ОШИБКА: в $ICONSET не прописан файл иконки 1024x1024."
+          echo "Положите PNG 1024x1024 без прозрачности в $ICONSET и впишите его имя"
+          echo "в Contents.json (ключ filename) — подробно в README.md."
+          exit 1
+        fi
+        ICON=$(grep -o '"filename"[^,}]*' "$ICONSET/Contents.json" | head -1 | sed 's/.*: *"\(.*\)"/\1/')
+        if [ ! -f "$ICONSET/$ICON" ]; then
+          echo "ОШИБКА: файл иконки $ICONSET/$ICON не найден."
+          exit 1
+        fi
+        echo "Иконка на месте: $ICON"
+
+    - &xcodegen
+      name: Сгенерировать проект (XcodeGen)
+      script: |
+        set -e
+        which xcodegen || brew install xcodegen
+        cd "$CM_BUILD_DIR"
+        xcodegen generate
+        echo "Готов YumurtaAdmin.xcodeproj"
+
+    # Версию пишем ПОСЛЕ XcodeGen прямо в готовый Info.plist: XcodeGen
+    # подставляет своё умолчание 1.0, а PlistBuddy от него не зависит.
+    # Номер сборки — BUILD_NUMBER Codemagic: TestFlight требует, чтобы внутри
+    # одной версии номера сборок не повторялись.
+    - &version
+      name: Версия и номер сборки
+      script: |
+        set -e
+        cd "$CM_BUILD_DIR"
+        APP_PLIST="Generated/Info.plist"
+        VERSION="${APP_VERSION:-$(grep -m1 'CFBundleShortVersionString:' project.yml | sed 's/.*: *"\(.*\)"/\1/')}"
+        if [ -z "$VERSION" ]; then
+          echo "ОШИБКА: не удалось определить версию."
+          echo "Задайте CFBundleShortVersionString в project.yml или переменную APP_VERSION."
+          exit 1
+        fi
+        [ -f "$APP_PLIST" ] || { echo "ОШИБКА: нет файла $APP_PLIST"; exit 1; }
+        /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PLIST" \
+          || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$APP_PLIST"
+        /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER:-1}" "$APP_PLIST" \
+          || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${BUILD_NUMBER:-1}" "$APP_PLIST"
+        A_V=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PLIST")
+        A_B=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
+        echo "─────────────────────────────────────────"
+        echo "  Yumurta Admin: версия $A_V, сборка $A_B"
+        echo "─────────────────────────────────────────"
+
+    # Есть ли карточка приложения и свободна ли версия.
+    #
+    # Карточку ищем по bundle id: App Store ID этого приложения появится
+    # только после того, как владелец создаст его в App Store Connect.
+    # Падаем ТОЛЬКО в двух точно известных случаях: API ответил, а карточки
+    # с таким bundle id нет (загрузка всё равно отвалилась бы через 10 минут),
+    # или версия уже выпущена и закрыта для новых сборок. Нет ключей, API
+    # не ответил, ответ не разобрался — сообщаем и идём дальше.
+    - &app_check
+      name: Карточка приложения и версия в App Store Connect
+      script: |
+        cd "$CM_BUILD_DIR"
+        BUNDLE="ru.marketplace.admin"
+        if [ -z "${APP_STORE_CONNECT_ISSUER_ID:-}" ] || [ -z "${APP_STORE_CONNECT_KEY_IDENTIFIER:-}" ]; then
+          echo "Нет переменных доступа к App Store Connect API — проверку пропускаю."
+          exit 0
+        fi
+        NORM="d=json.load(sys.stdin); d=d.get('data',d) if isinstance(d,dict) else d; d=[d] if isinstance(d,dict) else (d or [])"
+        if ! AJ=$(app-store-connect apps list --bundle-id-identifier "$BUNDLE" --strict-match-identifier --json 2>/tmp/asc_err.txt); then
+          echo "App Store Connect не ответил — проверку пропускаю. Начало ответа:"
+          head -c 500 /tmp/asc_err.txt || true
+          exit 0
+        fi
+        APP_ID=$(printf '%s' "$AJ" | python3 -c "import json,sys; $NORM; print(d[0]['id'] if d else 'NONE')" 2>/dev/null)
+        if [ -z "$APP_ID" ]; then
+          echo "Ответ App Store Connect не разобрался — проверку пропускаю. Начало ответа:"
+          printf '%s' "$AJ" | head -c 300
+          echo ""
+          exit 0
+        fi
+        if [ "$APP_ID" = "NONE" ]; then
+          echo "─────────────────────────────────────────"
+          echo "  ОШИБКА: в App Store Connect нет приложения с bundle id $BUNDLE."
+          echo "  Создайте карточку: Приложения → «+» → Новое приложение,"
+          echo "  платформа iOS, bundle id $BUNDLE (подробно — README.md)."
+          echo "─────────────────────────────────────────"
+          exit 1
+        fi
+        echo "Карточка приложения найдена: $APP_ID"
+        V=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "Generated/Info.plist" 2>/dev/null || true)
+        if [ -z "$V" ]; then echo "Не смог прочитать версию из Info.plist — проверку версии пропускаю."; exit 0; fi
+        if ! OUT=$(app-store-connect apps app-store-versions "$APP_ID" --platform IOS --json 2>/tmp/asc_err.txt); then
+          echo "Список версий не получен — проверку версии пропускаю."
+          exit 0
+        fi
+        printf '%s' "$OUT" > /tmp/asc_versions.json
+        RES=$(V="$V" python3 -c "import json,os;d=json.load(open('/tmp/asc_versions.json'));d=d.get('data',d) if isinstance(d,dict) else d;d=[d] if isinstance(d,dict) else (d or []);a=[i.get('attributes') or {} for i in d if isinstance(i,dict)];closed={'READY_FOR_SALE','APPROVED','PENDING_DEVELOPER_RELEASE','PENDING_APPLE_RELEASE','PROCESSING_FOR_APP_STORE','REPLACED_BY_NEW_VERSION'};mine=os.environ['V'];print('busy' if any(x.get('versionString')==mine and (x.get('appStoreState') or x.get('state')) in closed for x in a) else 'free')" 2>/dev/null || true)
+        if [ "$RES" = "busy" ]; then
+          echo "─────────────────────────────────────────"
+          echo "  ОШИБКА: версия $V уже выпущена и закрыта для новых сборок."
+          echo "  Поднимите CFBundleShortVersionString и MARKETING_VERSION в project.yml."
+          echo "─────────────────────────────────────────"
+          exit 1
+        fi
+        echo "Версия $V свободна (или проверка не дала ответа: ${RES:-нет данных}) — продолжаем."
+        exit 0
+
+    # «Что тестировать» в TestFlight. Codemagic сам берёт текст из файла
+    # release_notes.json в корне проекта и пишет его в TestFlight при
+    # публикации. Текст держим по-человечески в release-notes/ru.txt, а JSON
+    # собираем здесь. Шаг НИКОГДА не роняет сборку: нет текста — сборка уйдёт
+    # без «Что тестировать».
+    - &release_notes
+      name: Текст «Что тестировать» для TestFlight
+      script: |
+        cd "$CM_BUILD_DIR"
+        NOTES_FILE="${APP_STORE_WHATS_NEW_FILE:-release-notes/ru.txt}"
+        if [ ! -s "$NOTES_FILE" ]; then
+          echo "Файла $NOTES_FILE нет или он пуст — «Что тестировать» останется пустым."
+          exit 0
+        fi
+        if python3 -c "import json,sys; t=open(sys.argv[1],encoding='utf-8').read().strip(); u=t[:4000]; i=u.rfind(chr(10)); t=t if len(t)<=4000 else (u[:i] if i>3000 else u).rstrip(); json.dump([{'language':'ru','text':t}], open('release_notes.json','w',encoding='utf-8'), ensure_ascii=False)" "$NOTES_FILE"; then
+          echo "release_notes.json собран из $NOTES_FILE:"
+          head -c 300 release_notes.json
+          echo ""
+        else
+          echo "Не удалось собрать release_notes.json — сборка уйдёт без «Что тестировать»."
+        fi
+        exit 0
+
+    - &use_profiles
+      name: Применить профили подписи
+      script: |
+        set -e
+        xcode-project use-profiles --project "$CM_BUILD_DIR/YumurtaAdmin.xcodeproj"
+
+    # При неудаче вытаскиваем из полного лога строки error: и печатаем их
+    # последними — иначе в хвосте видно только перечень упавших команд.
+    - &build_ipa
+      name: Собрать .ipa
+      script: |
+        set -e
+        cd "$CM_BUILD_DIR"
+        xcode-project build-ipa --project "YumurtaAdmin.xcodeproj" --scheme "YumurtaAdmin" || {
+          echo ""
+          echo "═══════════════ ОШИБКИ КОМПИЛЯЦИИ ═══════════════"
+          grep -h -B 1 -A 4 "error:" /tmp/xcodebuild_logs/*.log 2>/dev/null \
+            | grep -v "^--$" | head -150 \
+            || echo "В логах строк error: не найдено — смотрите полный лог целиком."
+          echo "═════════════════════════════════════════════════"
+          exit 1
+        }
+
+workflows:
+
+  # ===========================================================================
+  #  1. Проверка сборки — без подписи и без выкладки
+  # ===========================================================================
+  ios-check:
+    name: Yumurta Admin — проверка сборки
+    max_build_duration: 45
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    scripts:
+      - *xcodegen
+      - name: Собрать под симулятор без подписи
+        script: |
+          set -e
+          cd "$CM_BUILD_DIR"
+          # pipefail обязателен: иначе код возврата берётся от xcpretty,
+          # а она возвращает успех всегда.
+          set -o pipefail
+          xcodebuild build \
+            -project YumurtaAdmin.xcodeproj \
+            -scheme YumurtaAdmin \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            | xcpretty || {
+              echo ""
+              echo "═══════════════ ОШИБКИ КОМПИЛЯЦИИ ═══════════════"
+              grep -h -B 1 -A 4 "error:" /tmp/xcodebuild_logs/*.log 2>/dev/null \
+                | grep -v "^--$" | head -150 \
+                || echo "Строк error: не найдено — смотрите полный лог."
+              echo "═════════════════════════════════════════════════"
+              exit 1
+            }
+    artifacts:
+      - /tmp/xcodebuild_logs/*.log
+
+  # ===========================================================================
+  #  2. TestFlight — единственный способ раздачи этого приложения
+  # ===========================================================================
+  ios-testflight:
+    name: Yumurta Admin — TestFlight
+    max_build_duration: 90
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: yumurta_asc
+    environment:
+      xcode: latest
+      ios_signing:
+        # Сертификат общий для всей команды (тот же, что у продавца и
+        # клиента). Профиль — свой, для ru.marketplace.admin.
+        provisioning_profiles:
+          - yumurta_admin_appstore           # ru.marketplace.admin
+        certificates:
+          - yumurta_dist
+    scripts:
+      - *preflight
+      - *xcodegen
+      - *version
+      - *app_check
+      - *use_profiles
+      - *build_ipa
+      - *release_notes
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        # Сборка уезжает в App Store Connect и после обработки (10–30 минут)
+        # сразу видна внутренним тестировщикам TestFlight — бета-проверка
+        # Apple для них не нужна. submit_to_testflight создаёт заявку на
+        # БЕТА-проверку для внешних тестировщиков — здесь не нужна.
+        submit_to_testflight: false
+        # В App Store это приложение не публикуется никогда.
+        submit_to_app_store: false
