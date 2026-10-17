@@ -60,7 +60,12 @@ final class AppRouter: ObservableObject {
             tab = t
             return
         }
-        morePath = [.section(section, openId: id, subtab: subtab)]
+        let route = MoreRoute.section(section, openId: id, subtab: subtab)
+        // Тот же переход ещё раз (второй push о той же организации) — путь не
+        // меняется, и SwiftUI ничего бы не открыл. Новое поколение пересоздаёт
+        // стек «Ещё» (MainTabView: .id), и раздел/чат открывается заново.
+        if morePath == [route] { generation[.more] = (generation[.more] ?? 0) + 1 }
+        morePath = [route]
         tab = .more
     }
 
@@ -91,20 +96,36 @@ final class AppRouter: ObservableObject {
         }
         let type = (userInfo["type"] as? String) ?? ""
         if let target = AppRouter.sectionForPushType(type) {
-            let objectId = AppRouter.intValue(userInfo[target.idKey]) ?? id
-            open(section: target.section, id: objectId)
+            // Ключ id у каждого типа свой (П-29.2): id, shop_id, ad_id. Нет ключа — раздел
+            // без объекта (например, лицензии: id документа ≠ id заявки, раздел его не откроет).
+            var objectId: Int? = nil
+            if let key = target.idKey { objectId = AppRouter.intValue(userInfo[key]) }
+            // Прежнее поведение shop_publish_request: shop_id, а если его нет — id.
+            if objectId == nil && type == "shop_publish_request" { objectId = id }
+            open(section: target.section, id: objectId, subtab: target.subtab)
             return
         }
         tab = .inbox
     }
 
-    /// Серверные типы push → раздел и ключ id в payload.
-    /// Сегодня сервер шлёт админам только shop_publish_request (helpers.php notifyAdmins,
-    /// data = {type, shop_id}). Когда сервер добавит новые типы — дописать их сюда.
+    /// Серверные типы push → раздел, ключ id в payload (nil — без объекта) и вкладка раздела.
+    /// Типы — ответ сервера на П-29.2: data {type, id} строками (+ shop_id / ad_id, где есть).
     /// Незнакомый тип открывает вкладку «Заявки».
-    static func sectionForPushType(_ type: String) -> (section: AdminSection, idKey: String)? {
+    static func sectionForPushType(_ type: String) -> (section: AdminSection, idKey: String?, subtab: String?)? {
         switch type {
-        case "shop_publish_request": return (.shops, "shop_id")
+        case "shop_publish_request": return (.shops, "shop_id", nil)
+        // Сообщение организации в «Сообщения продавцам» → сразу её чат.
+        case "shop_support": return (.shopSupport, "shop_id", nil)
+        case "shop_registration": return (.registrations, "id", nil)
+        case "org_document": return (.registrations, nil, "documents")
+        case "support_ticket": return (.support, "id", nil)
+        case "complaint": return (.complaints, "id", nil)
+        case "return_request": return (.returns, "id", nil)
+        // id — заявка на пополнение магазина (wallet_topups.id), её показывает вкладка «Продавцы».
+        case "topup_request": return (.wallets, "id", nil)
+        // Вкладка «Жалобы» раздела «Объявления» (id жалобы объявлением не является).
+        case "ad_report": return (.ads, nil, "reports")
+        case "moderation_backlog": return (.reviews, nil, nil)
         default: return nil
         }
     }

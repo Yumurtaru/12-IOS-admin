@@ -226,6 +226,11 @@ struct ShopDetailView: View {
 
     private var moreSection: some View {
         Section {
+            // Переписка с организацией (раздел «Сообщения продавцам»): чат открывается
+            // и без прежней переписки — первое сообщение её создаст.
+            NavigationLink(destination: ShopSupportChatView(shopId: id)) {
+                Label("Написать организации", systemImage: "bubble.left.and.bubble.right")
+            }
             if let url = ShopsLabels.storefrontURL(slug: shop["slug"].string) {
                 Link(destination: url) {
                     Label("Витрина на сайте", systemImage: "storefront")

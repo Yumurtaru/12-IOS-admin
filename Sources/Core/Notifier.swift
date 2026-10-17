@@ -23,6 +23,8 @@ import UserNotifications
 /// | complaints       | GET /api/admin/dashboard?period=7                | data.open_complaints (status=open)                    |
 /// | support          | GET /api/admin/support/tickets?status=open       | data.total                                            |
 /// | adReports        | GET /api/admin/ads/reports                       | data.total (жалобы на объявления status=new)          |
+/// | shopSupport      | GET /api/admin/shop-support/unread               | data.threads (переписки с непрочитанным от продавцов);|
+/// |                  |                                                  | подпись — data.messages (сколько сообщений)           |
 /// | cron             | GET /api/admin/dashboard?period=7                | data.cron.stale → 1, иначе 0                          |
 ///
 /// Чего нет и почему: «Выплаты» — выплаты создаёт сам админ (сразу «выплачено»),
@@ -30,7 +32,7 @@ import UserNotifications
 /// модерации» (только active/hidden). Поэтому этих категорий нет.
 enum NotifyCategory: String, CaseIterable, Identifiable {
     case registrations, publish, documents, shopTopups, onlinePayments, walletReconcile
-    case userTopups, returns, reviews, complaints, support, adReports, cron
+    case userTopups, returns, reviews, complaints, support, shopSupport, adReports, cron
 
     var id: String { rawValue }
 
@@ -48,6 +50,7 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case .reviews: return "Отзывы на модерации"
         case .complaints: return "Новые жалобы"
         case .support: return "Открытые обращения в поддержку"
+        case .shopSupport: return "Сообщения продавцам"
         case .adReports: return "Жалобы на объявления"
         case .cron: return "Фоновые задачи не запускаются"
         }
@@ -67,6 +70,7 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case .reviews: return "Отзыв ждёт модерации"
         case .complaints: return "Новая жалоба"
         case .support: return "Новое обращение в поддержку"
+        case .shopSupport: return "Сообщение от организации"
         case .adReports: return "Жалоба на объявление"
         case .cron: return "Крон не работает"
         }
@@ -81,6 +85,7 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case .reviews: return .reviews
         case .complaints: return .complaints
         case .support: return .support
+        case .shopSupport: return .shopSupport
         case .adReports: return .ads
         case .cron: return .dashboard
         }
@@ -95,12 +100,45 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case .publish: return "publish"
         case .documents: return "documents"
         case .userTopups: return "topups"
+        // Раздел «Сообщения продавцам» откроется с фильтром «Непрочитанные».
+        case .shopSupport: return "unread"
         default: return nil
         }
     }
 
     /// Это сигнал-тревога (0/1), а не очередь штук.
     var isAlarm: Bool { self == .cron }
+
+    /// О категории сервер присылает свой push (П-29.2). Пока токен телефона
+    /// подтверждён (AdminPush.serverPushRegistered), локальный баннер о ней не
+    /// нужен — счётчики, бейдж и «Заявки» обновляются как раньше.
+    var serverPushed: Bool {
+        switch self {
+        case .registrations, .publish, .documents, .shopTopups, .returns:
+            return true
+        case .complaints, .support, .shopSupport, .adReports:
+            return true
+        case .onlinePayments, .walletReconcile, .userTopups, .reviews, .cron:
+            return false
+        }
+    }
+
+    /// Категория серверного push по его type (для переключателей в настройках).
+    static func forPushType(_ type: String) -> NotifyCategory? {
+        switch type {
+        case "shop_registration": return .registrations
+        case "shop_publish_request": return .publish
+        case "org_document": return .documents
+        case "topup_request": return .shopTopups
+        case "return_request": return .returns
+        case "complaint": return .complaints
+        case "support_ticket": return .support
+        case "shop_support": return .shopSupport
+        case "ad_report": return .adReports
+        case "moderation_backlog": return .reviews
+        default: return nil
+        }
+    }
 
     /// Текст уведомления: сколько добавилось и сколько всего ждёт.
     func notifyBody(added: Int, total: Int) -> String {
@@ -109,6 +147,9 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         }
         if self == .walletReconcile {
             return "Расхождений: " + String(total) + ". Откройте «Кошельки»."
+        }
+        if self == .shopSupport {
+            return "Переписок с непрочитанным: " + String(total)
         }
         let plus = added > 0 ? "+" + String(added) + " · " : ""
         return plus + "всего ждут: " + String(total)
@@ -238,6 +279,8 @@ final class Notifier: ObservableObject {
         async let supportF = Notifier.fetch("/api/admin/support/tickets", ["status": "open", "page": "1"])
         async let adsF = Notifier.fetch("/api/admin/ads/reports", ["page": "1"])
         async let userTopF = Notifier.fetch("/api/admin/user-topups", ["status": "pending"])
+        // Переписка с организациями (волна А66): дешёвый счётчик без DDL на сервере.
+        async let shopSupF = Notifier.fetch("/api/admin/shop-support/unread", [:])
         let dash = await dashF
         let wallets = await walletsF
         let docs = await docsF
@@ -245,7 +288,10 @@ final class Notifier: ObservableObject {
         let support = await supportF
         let ads = await adsF
         let userTop = await userTopF
+        let shopSup = await shopSupF
         guard Session.shared.isLoggedIn, !Task.isCancelled else { return }
+        // Сколько запросов в опросе (все упали — показываем текст первой ошибки).
+        let sourceCount = 8
 
         var next = counts
         var nextNotes = notes
@@ -283,17 +329,22 @@ final class Notifier: ObservableObject {
         if let j = userTop.json {
             next[.userTopups] = j["items"].array.filter { $0["stale"].boolValue }.count
         } else { fail("Пополнения клиентов", userTop) }
+        if let j = shopSup.json {
+            next[.shopSupport] = j["threads"].intValue
+            let msgs = j["messages"].intValue
+            nextNotes[.shopSupport] = msgs > 0 ? "Непрочитанных сообщений: " + String(msgs) : nil
+        } else { fail("Сообщения продавцам", shopSup) }
 
         counts = next
         notes = nextNotes
-        if failed.count == 7 {
+        if failed.count == sourceCount {
             lastError = firstError.map { APIError.describe($0) } ?? "Не удалось обновить"
         } else if !failed.isEmpty {
             lastError = "Не обновилось: " + failed.joined(separator: ", ")
         } else {
             lastError = nil
         }
-        if failed.count < 7 { lastUpdated = Date() }
+        if failed.count < sourceCount { lastUpdated = Date() }
         await announceGrowth(next)
         updateBadge()
     }
@@ -365,6 +416,15 @@ final class Notifier: ObservableObject {
         return j["items"].array.count
     }
 
+    /// shop_id единственной переписки с непрочитанным (nil — их не одна или запрос не прошёл).
+    nonisolated private static func singleUnreadShopId() async -> Int? {
+        guard let j = try? await API.shared.get("/api/admin/shop-support/threads",
+                                                query: ["filter": "unread", "page": "1"]) else { return nil }
+        let items = j["items"].array
+        guard items.count == 1 else { return nil }
+        return items[0]["shop_id"].int
+    }
+
     private static func cronNote(_ c: JSON) -> String? {
         if c["never"].boolValue { return "Крон ни разу не отмечался на сервере" }
         guard c["stale"].boolValue else { return nil }
@@ -380,6 +440,8 @@ final class Notifier: ObservableObject {
             let prev = seen[c.rawValue]
             seen[c.rawValue] = value
             guard let p = prev, value > p, isEnabled(c) else { continue }
+            // Сервер уже прислал push об этом событии — второй (локальный) баннер не нужен.
+            if c.serverPushed && AdminPush.serverPushRegistered { continue }
             await post(c, added: value - p, total: value)
         }
         UserDefaults.standard.set(seen, forKey: seenKey)
@@ -393,6 +455,12 @@ final class Notifier: ObservableObject {
         content.threadIdentifier = c.rawValue
         var info: [String: String] = ["section": c.section.rawValue, "category": c.rawValue]
         if let sub = c.subtab { info["subtab"] = sub }
+        // Ровно одна переписка с непрочитанным — тап откроет сразу её чат (id = shop_id).
+        // Лишний запрос — только когда приложение на экране (в фоне iOS даёт мало времени).
+        let active = UIApplication.shared.applicationState == .active
+        if c == .shopSupport && total == 1 && active, let sid = await Notifier.singleUnreadShopId() {
+            info["id"] = String(sid)
+        }
         content.userInfo = info
         // Один идентификатор на категорию: новое уведомление заменяет старое,
         // а не копит десятки одинаковых.

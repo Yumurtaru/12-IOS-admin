@@ -40,8 +40,21 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let info = notification.request.content.userInfo
         let raw = info["category"] as? String
+        let type = info["type"] as? String
+        let shopRaw = info["shop_id"]
+        let shopId: Int? = (shopRaw as? Int) ?? (shopRaw as? String).flatMap { Int($0) }
+        // Категория: у локального — ключ category, у серверного push — по type.
+        // Выключенная в настройках категория не показывает баннер при открытом приложении.
+        let category = raw.flatMap { NotifyCategory(rawValue: $0) } ?? NotifyCategory.forPushType(type ?? "")
         Task { @MainActor in
-            if let r = raw, let cat = NotifyCategory(rawValue: r), !Notifier.shared.isEnabled(cat) {
+            if let cat = category, !Notifier.shared.isEnabled(cat) {
+                completionHandler([])
+                return
+            }
+            // Сообщение организации, чей чат сейчас на экране: баннер не нужен —
+            // просим чат подтянуть новое сразу, не дожидаясь опроса раз в 15 с.
+            if type == "shop_support", let sid = shopId, sid == ShopSupportLive.visibleShopId {
+                NotificationCenter.default.post(name: ShopSupportLive.poke, object: nil)
                 completionHandler([])
                 return
             }

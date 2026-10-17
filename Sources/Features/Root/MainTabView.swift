@@ -17,6 +17,8 @@ struct MainTabView: View {
             shopsTab
             ordersTab
             MoreView()
+                // Поколение меняет Router при повторном переходе в тот же раздел.
+                .id(router.generationOf(.more))
                 .tabItem { Label("Ещё", systemImage: "ellipsis.circle") }
                 .tag(AppRouter.Tab.more)
         }

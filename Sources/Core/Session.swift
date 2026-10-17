@@ -91,6 +91,14 @@ final class Session: ObservableObject {
     /// Вызывает API, когда refresh-токен отклонён: выходим с пометкой.
     func handleExpired() {
         guard state == .loggedIn else { return }
+        // Сессия истекла — гасим push этого телефона (П-28.6: /push/unregister без входа),
+        // иначе push об админских событиях шли бы на разлогиненный телефон. Не ждём ответа.
+        if let token = AdminPush.deviceToken {
+            Task {
+                _ = try? await API.shared.request("POST", "/api/v1/push/unregister",
+                                                  body: ["token": token], auth: false)
+            }
+        }
         wipe(notice: "Сессия истекла. Войдите снова.")
     }
 
@@ -133,6 +141,8 @@ final class Session: ObservableObject {
         API.clearCookies()
         UserDefaults.standard.removeObject(forKey: userKey)
         user = .null
+        // Токен на сервере погашен (выход) — снова нужны локальные баннеры до новой регистрации.
+        AdminPush.forgetRegistration()
         Notifier.shared.reset()
         notice = text
         state = .loggedOut

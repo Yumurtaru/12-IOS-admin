@@ -8,7 +8,11 @@ import SwiftUI
 enum AdminSection: String, CaseIterable, Identifiable, Hashable {
     case dashboard, registrations, shops, users, orders, returns, wallets, payouts, referrals
     case products, reviews, complaints, ads, cities, plans, banners, pages, templates
-    case campaigns, support, reports, audit, staff, settings, database, parser
+    case campaigns, support
+    // Переписка организаций с поддержкой площадки (как /admin/shop-support.php на сайте).
+    // Ключ с дефисом — как у страницы сайта; в ссылке: yumurta-admin://section/shop-support/<shop_id>.
+    case shopSupport = "shop-support"
+    case reports, audit, staff, settings, database, parser
 
     var id: String { rawValue }
 
@@ -35,6 +39,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .templates: return "Шаблоны"
         case .campaigns: return "Рассылки"
         case .support: return "Поддержка"
+        case .shopSupport: return "Сообщения продавцам"
         case .reports: return "Отчёты"
         case .audit: return "Журнал"
         case .staff: return "Администраторы"
@@ -67,6 +72,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .templates: return "bell"
         case .campaigns: return "paperplane"
         case .support: return "headphones"
+        case .shopSupport: return "bubble.left.and.bubble.right"
         case .reports: return "chart.pie"
         case .audit: return "clock.arrow.circlepath"
         case .staff: return "checkmark.shield"
@@ -79,7 +85,8 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
     /// Корневой экран раздела. AnyView — чтобы 26 веток не перегружали проверку типов.
     /// Экран НЕ содержит NavigationStack: его даёт вкладка или меню «Ещё».
     /// `subtab` — rawValue вкладки внутри раздела (NotifyCategory.subtab); сейчас его
-    /// понимают «Заявки магазинов» (registrations/publish/documents), остальные разделы
+    /// понимают «Заявки магазинов» (registrations/publish/documents) и «Сообщения
+    /// продавцам» ("unread" — фильтр непрочитанных), остальные разделы
     /// открываются на своей вкладке по умолчанию.
     func makeRoot(openId: Int? = nil, subtab: String? = nil) -> AnyView {
         switch self {
@@ -99,7 +106,10 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .products: return AnyView(ProductsRootView(openId: openId))
         case .reviews: return AnyView(ReviewsRootView(openId: openId))
         case .complaints: return AnyView(ComplaintsRootView(openId: openId))
-        case .ads: return AnyView(AdsRootView(openId: openId))
+        case .ads:
+            // "reports" — вкладка «Жалобы» (push ad_report).
+            let tab: AdsTab? = subtab == "reports" ? .reports : nil
+            return AnyView(AdsRootView(openId: openId, initialTab: tab))
         case .cities: return AnyView(CitiesRootView(openId: openId))
         case .plans: return AnyView(PlansRootView(openId: openId))
         case .banners: return AnyView(BannersRootView(openId: openId))
@@ -107,6 +117,8 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .templates: return AnyView(TemplatesRootView(openId: openId))
         case .campaigns: return AnyView(CampaignsRootView(openId: openId))
         case .support: return AnyView(SupportRootView(openId: openId))
+        // openId — id организации (её чат открывается сразу), subtab "unread" — фильтр «Непрочитанные».
+        case .shopSupport: return AnyView(ShopSupportRootView(openId: openId, subtab: subtab))
         case .reports: return AnyView(ReportsRootView(openId: openId))
         case .audit: return AnyView(AuditRootView(openId: openId))
         case .staff: return AnyView(StaffRootView(openId: openId))

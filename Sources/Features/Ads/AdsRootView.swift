@@ -27,9 +27,11 @@ struct AdsRootView: View {
     @State private var deepLinkItem: JSON?
     @State private var deepLinkActive = false
 
-    init(openId: Int? = nil) {
+    init(openId: Int? = nil, initialTab: AdsTab? = nil) {
         self.openId = openId
         _deepLinkPending = State(initialValue: openId != nil)
+        // Push ad_report открывает сразу вкладку «Жалобы» (subtab "reports").
+        _tab = State(initialValue: initialTab ?? .list)
     }
 
     var body: some View {
