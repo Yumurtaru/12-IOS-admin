@@ -13,6 +13,10 @@ struct ShopsRootView: View {
     @State private var cityOptions: [PickerOption] = []
     @State private var openDeepLink = false
     @State private var deepLinkHandled = false
+    @State private var showCreate = false
+    /// Карточку какой организации открыть после закрытия листа «Добавить организацию».
+    @State private var pendingOpenId: Int?
+    @State private var createdOpenId: Int?
 
     init(openId: Int? = nil) {
         self.openId = openId
@@ -31,8 +35,31 @@ struct ShopsRootView: View {
                         emptyText: "Магазинов нет", header: queueHeader,
                         row: { ShopsListRow(shop: $0) },
                         destination: { shop in shopDestination(shop) })
+            // Один переход на двоих: push-ссылка (openId) и только что созданная
+            // организация (createdOpenId) — два navigationDestination(isPresented:)
+            // на одном экране iOS 16 обрабатывает ненадёжно.
             .navigationDestination(isPresented: $openDeepLink) {
-                ShopDetailView(id: openId ?? 0, onDeleted: { removed in model.remove(id: removed) })
+                ShopDetailView(id: createdOpenId ?? openId ?? 0, onDeleted: { removed in model.remove(id: removed) })
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showCreate = true
+                    } label: {
+                        Label("Добавить организацию", systemImage: "plus")
+                    }
+                }
+            }
+            .sheet(isPresented: $showCreate, onDismiss: {
+                // Переход — только после закрытия листа, иначе iOS 16 может его не выполнить.
+                if let sid = pendingOpenId {
+                    pendingOpenId = nil
+                    createdOpenId = sid
+                    openDeepLink = true
+                }
+            }) {
+                ShopCreateSheet(onCreated: { Task { await model.refresh() } },
+                                onOpenShop: { sid in pendingOpenId = sid })
             }
             .onAppear {
                 if let _ = openId, !deepLinkHandled {

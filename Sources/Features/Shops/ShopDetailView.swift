@@ -28,6 +28,7 @@ struct ShopDetailView: View {
     @State private var pendingDeletedText: String?
     @State private var enterBusy = false
     @State private var enterError: String?
+    @State private var showOwnerPassword = false
     @Environment(\.openURL) private var openURL
 
     init(id: Int, onDeleted: ((Int) -> Void)? = nil) {
@@ -73,6 +74,11 @@ struct ShopDetailView: View {
             ShopDeleteSheet(shopId: id, shopName: name, preview: pv.data) { result in
                 pendingDeletedText = result
             }
+        }
+        // Волна А76: «Выдать новый пароль». После закрытия — перечитать карточку
+        // (has_password мог смениться).
+        .sheet(isPresented: $showOwnerPassword, onDismiss: { Task { await loader.load() } }) {
+            ShopOwnerPasswordSheet(shopId: id, shopName: name, ownerName: shop["owner"]["name"].nonEmptyString)
         }
         .alert("Организация удалена", isPresented: deletedShown) {
             Button("OK") {
@@ -121,6 +127,9 @@ struct ShopDetailView: View {
             }
             ShopDetailStatsSection(shop: shop)
             ShopDetailOwnerSection(shop: shop)
+            if ShopOwnerAccessSection.supported(shop) {
+                ShopOwnerAccessSection(shop: shop, onResetPassword: { showOwnerPassword = true })
+            }
             termsSection
             walletSection
             moreSection
@@ -450,7 +459,9 @@ struct ShopDetailOwnerSection: View {
         } else {
             ownerLabel
         }
-        phoneRow("Телефон владельца", owner["phone"].string)
+        // Волна А76: у аккаунта только с почтой phone — заглушка «o:…», не номер;
+        // сервер отдаёт настоящий в login_phone (старый сервер — ключа нет).
+        phoneRow("Телефон владельца", owner.object["login_phone"] != nil ? owner["login_phone"].string : owner["phone"].string)
         KVRow("E-mail владельца", owner["email"].string, copyable: true)
     }
 

@@ -277,7 +277,10 @@ enum JSONBody {
         guard JSONSerialization.isValidJSONObject(obj) else {
             throw APIError.badResponse("Не удалось подготовить данные для отправки")
         }
-        return try JSONSerialization.data(withJSONObject: obj, options: [])
+        // Ключи по алфавиту: сервер узнаёт повтор с тем же Idempotency-Key по
+        // отпечатку тела, а словарь Swift при каждой сборке даёт свой порядок —
+        // повтор после обрыва получал «ключ уже использован» вместо прежнего ответа.
+        return try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
     }
 
     /// Привести любое значение к виду, который понимает JSONSerialization.

@@ -174,14 +174,28 @@ final class API {
         try await request("DELETE", path, query: query, body: body).data
     }
 
+    /// POST с ключом повтора (заголовок `Idempotency-Key`, core/helpers.php apiIdemKey).
+    /// Повтор с тем же ключом и тем же телом сервер не выполняет второй раз, а
+    /// отдаёт сохранённый ответ (`Idempotency-Replayed: true`). Ключ держит
+    /// вызывающий: тот же — для повтора после обрыва связи, новый — после
+    /// окончательного ответа сервера.
+    @discardableResult
+    func postIdempotent(_ path: String, body: [String: Any?], key: String) async throws -> APIResult {
+        try await request("POST", path, body: body, headers: ["Idempotency-Key": key])
+    }
+
     // MARK: - Общий запрос
 
     /// Любой запрос. `auth: false` — без токена и без попытки обновить его (вход).
+    /// `headers` — дополнительные заголовки (ключ повтора и т.п.).
     func request(_ method: String, _ path: String, query: [String: String?] = [:],
-                 body: [String: Any?]? = nil, auth: Bool = true) async throws -> APIResult {
+                 body: [String: Any?]? = nil, auth: Bool = true,
+                 headers: [String: String] = [:]) async throws -> APIResult {
         let bodyData: Data? = try body.map { try JSONBody.data($0) }
         let build: () throws -> URLRequest = {
-            try self.makeRequest(method, path, query: query, auth: auth, contentType: bodyData == nil ? nil : "application/json")
+            var req = try self.makeRequest(method, path, query: query, auth: auth, contentType: bodyData == nil ? nil : "application/json")
+            for (name, value) in headers { req.setValue(value, forHTTPHeaderField: name) }
+            return req
         }
         return try await perform(auth: auth) {
             var req = try build()
