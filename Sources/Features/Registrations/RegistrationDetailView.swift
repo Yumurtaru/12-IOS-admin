@@ -2,9 +2,9 @@ import SwiftUI
 
 /// Карточка заявки на регистрацию организации.
 ///
-/// Отдельной ручки «заявка по id» на сервере нет: из списка карточка получает
-/// строку целиком, а по deep link (`initial == nil`) ищет заявку в
-/// GET /api/admin/registrations постранично (по 200, все статусы).
+/// Из списка карточка получает строку целиком, а по deep link (`initial == nil`)
+/// берёт заявку из GET /api/admin/registrations/{id} (П-29.4); старый сервер без
+/// этой ручки — ищет её в GET /api/admin/registrations постранично (по 200, все статусы).
 ///
 /// Действия (auth_seller.php):
 ///  * «Одобрить» — POST /api/admin/registrations/{id}/approve {plan_id,
@@ -36,6 +36,13 @@ struct RegistrationDetailView: View {
     private var status: String { reg["status"].stringValue }
     private var name: String { reg["shop_name"].nonEmptyString ?? ("Заявка #" + String(id)) }
     private var canDecide: Bool { status == "pending" || status == "more_info_needed" }
+    /// Организация заявки: только что одобренная здесь или из поля shop_id (волна А75 —
+    /// сервер пишет его и при ручном, и при автоматическом одобрении).
+    private var linkedShopId: Int? {
+        if let s = createdShopId, s > 0 { return s }
+        guard status == "approved", let s = reg["shop_id"].int, s > 0 else { return nil }
+        return s
+    }
 
     var body: some View {
         AsyncContent(state: state, emptyText: "Заявка не найдена", emptySymbol: "doc.text.magnifyingglass",
@@ -73,13 +80,17 @@ struct RegistrationDetailView: View {
     private var content: some View {
         List {
             headerSection
-            if let shopId = createdShopId {
+            if let shopId = linkedShopId {
                 Section {
                     NavigationLink(destination: ShopDetailView(id: shopId)) {
                         Label("Открыть созданную организацию", systemImage: "building.2")
                     }
                 } footer: {
-                    Text("Организация создана неопубликованной: продавец наполнит её и отправит на проверку — она появится во вкладке «Публикация».")
+                    if ShopsLabels.registrationAutoApproved(reg) {
+                        Text("Организация активирована автоматически при регистрации и пока не опубликована: продавец заполняет её в панели. Когда он отправит её на проверку, она появится во вкладке «Публикация».")
+                    } else {
+                        Text("Организация создана неопубликованной: продавец наполнит её и отправит на проверку — она появится во вкладке «Публикация».")
+                    }
                 }
             }
             if status != "approved" {
@@ -101,7 +112,7 @@ struct RegistrationDetailView: View {
                 Text(name)
                     .font(.title3.weight(.semibold))
                 HStack(spacing: 6) {
-                    StatusBadge(status: status, label: ShopsLabels.registrationStatus(status))
+                    StatusBadge(status: status, label: ShopsLabels.registrationStatusLabel(reg))
                     StatusBadge(ShopsLabels.registrationType(reg["shop_type"].string), color: Brand.blue)
                 }
                 Text("Подана " + Fmt.date(reg["created_at"].string) + " · #" + String(id))
@@ -169,6 +180,13 @@ struct RegistrationDetailView: View {
     /// Поиск заявки по id (deep link): все статусы, по 200 на страницу, не больше 25 страниц.
     private func find() async {
         if reg.isNull { state = .loading }
+        // П-29.4: сначала карточка по id — заявка найдётся, даже если она далеко
+        // в списке. Старый сервер такой ручки не знает — тогда ищем по страницам, как раньше.
+        if let one = try? await API.shared.get("/api/admin/registrations/" + String(id)), one.id == id {
+            reg = one
+            state = .loaded
+            return
+        }
         var page = 1
         while page <= 25 {
             do {

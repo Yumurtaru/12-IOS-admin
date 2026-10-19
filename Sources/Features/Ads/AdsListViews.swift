@@ -111,7 +111,8 @@ struct AdsRow: View {
     }
 }
 
-/// Карточка объявления (строка списка; ручки «объявление по id» нет) с действиями.
+/// Карточка объявления с действиями: строка списка, дополненная GET /api/admin/ads/{id}
+/// (П-29.4: описание, контакты, все фото, жалобы). Старый сервер — только строка списка.
 struct AdsAdDetailView: View {
     let model: PagedListModel
     @ObservedObject var stats: ObjectLoader
@@ -123,6 +124,7 @@ struct AdsAdDetailView: View {
     /// Итог блокировки: показываем после закрытия листа (алерт поверх
     /// закрывающегося листа iOS может не показать).
     @State private var blockInfo: String?
+    @State private var enrichTried = false
 
     init(ad: JSON, model: PagedListModel, stats: ObjectLoader) {
         self.model = model
@@ -136,6 +138,7 @@ struct AdsAdDetailView: View {
     var body: some View {
         List {
             headerSection
+            AdsAdExtraSections(ad: ad)
             AdsAdInfoSection(ad: ad)
             authorSection
             actionsSection
@@ -143,6 +146,7 @@ struct AdsAdDetailView: View {
         }
         .navigationTitle("Объявление #" + String(id))
         .navigationBarTitleDisplayMode(.inline)
+        .task { await enrich() }
         .sheet(isPresented: $askBlock, onDismiss: showBlockInfo) { blockSheet }
         .alert(info ?? "", isPresented: infoShown) {
             Button("OK", role: .cancel) {}
@@ -247,6 +251,20 @@ struct AdsAdDetailView: View {
         }
     }
 
+    /// П-29.4: подробности карточки по id. Дописываем только недостающие поля —
+    /// статус и причину блокировки, уже поменянные на этом экране, не перетираем.
+    private func enrich() async {
+        guard !enrichTried, id > 0, ad.object["photo_list"] == nil else { return }
+        enrichTried = true
+        let aid = id
+        guard let one = try? await API.shared.get("/api/admin/ads/" + String(aid)), one.id == aid else { return }
+        var o = ad.object
+        for (k, v) in one.object where o[k] == nil {
+            o[k] = v
+        }
+        ad = .object(o)
+    }
+
     private func showBlockInfo() {
         if let t = blockInfo {
             blockInfo = nil
@@ -308,5 +326,118 @@ struct AdsAdInfoSection: View {
     private func dateText(_ key: String) -> String? {
         guard let s = ad[key].nonEmptyString else { return nil }
         return Fmt.date(s)
+    }
+}
+
+/// Подробности объявления из GET /api/admin/ads/{id} (П-29.4): все фото, описание,
+/// контакты, адрес, жалобы. В строке списка этих полей нет — секции не показываются.
+struct AdsAdExtraSections: View {
+    let ad: JSON
+
+    init(ad: JSON) {
+        self.ad = ad
+    }
+
+    var body: some View {
+        Group {
+            photosSection
+            textSection
+            reportsSection
+        }
+    }
+
+    /// Пути фото: card (или full / thumb) каждого элемента photo_list.
+    private var photoPaths: [String] {
+        var out: [String] = []
+        for ph in ad["photo_list"].array {
+            let path = ph["card"].nonEmptyString ?? ph["full"].nonEmptyString ?? ph["thumb"].nonEmptyString
+            if let p = path { out.append(p) }
+        }
+        return out
+    }
+
+    @ViewBuilder
+    private var photosSection: some View {
+        let paths = photoPaths
+        if paths.count > 1 {
+            Section("Все фото (" + String(paths.count) + ")") {
+                ReviewsPhotoStrip(paths: paths, size: 120)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var textSection: some View {
+        let desc = ad["description"].nonEmptyString
+        let contact = ad["contact_name"].nonEmptyString
+        let phone = ad["contact_phone"].nonEmptyString
+        let address = ad["address"].nonEmptyString
+        if desc != nil || contact != nil || phone != nil || address != nil {
+            Section("Описание и контакты") {
+                if let d = desc {
+                    Text(d)
+                        .font(.subheadline)
+                        .textSelection(.enabled)
+                }
+                if let c = contact {
+                    KVRow("Контакт", c)
+                }
+                if let p = phone {
+                    contactPhoneRow(p)
+                }
+                if let a = address {
+                    KVRow("Адрес", a, copyable: true)
+                }
+                if ad["is_negotiable"].boolValue {
+                    KVRow("Торг", "уместен")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func contactPhoneRow(_ phone: String) -> some View {
+        if let url = Fmt.phoneURL(phone) {
+            Link(destination: url) { KVRow("Телефон в объявлении", Fmt.phone(phone)) }
+        } else {
+            KVRow("Телефон в объявлении", phone)
+        }
+    }
+
+    @ViewBuilder
+    private var reportsSection: some View {
+        let reports = ad["report_list"].array
+        if !reports.isEmpty {
+            Section("Жалобы (" + String(reports.count) + ")") {
+                ForEach(Array(reports.enumerated()), id: \.offset) { pair in
+                    AdsAdReportLine(report: pair.element)
+                }
+            }
+        }
+    }
+}
+
+/// Строка жалобы в карточке объявления: причина, статус, дата.
+struct AdsAdReportLine: View {
+    let report: JSON
+
+    init(report: JSON) {
+        self.report = report
+    }
+
+    private var statusText: String {
+        report["status"].string == "new" ? "новая" : "закрыта"
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(AdsFormat.reportReason(report["reason"].string))
+                .font(.subheadline)
+            Spacer(minLength: 8)
+            Text(statusText + " · " + Fmt.date(report["created_at"]))
+                .font(.caption)
+                .foregroundColor(Brand.muted)
+        }
     }
 }

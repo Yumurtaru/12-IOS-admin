@@ -305,7 +305,9 @@ final class API {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let json = JSON.parse(data)
             let env = API.unwrap(json, status: status)
-            if env.ok && (200..<300).contains(status) {
+            // Ответ 200 не-JSON (страница Wi-Fi-авторизации, HTML прокси) успехом не считаем:
+            // раньше он проходил как «готово» с пустыми данными, и проверка ниже не срабатывала.
+            if env.ok && json != nil && (200..<300).contains(status) {
                 return APIResult(data: env.data, meta: env.meta, raw: json ?? .null, status: status)
             }
             if status == 401 && auth && attempt == 1 {

@@ -7,11 +7,12 @@ import SwiftUI
 /// правкой, кошелёк (пополнение, история), публикация (если ждёт), витрина,
 /// удаление с подтверждением названием и паролем/кодом 2FA.
 ///
-/// «Войти в панель» (POST /api/admin/shops/{id}/enter) здесь не вызывается:
-/// сервер отмечает вход в строке СЕССИИ того, кто вызвал (user_sessions по sid
-/// токена приложения), а Safari живёт со своей cookie-сессией — кабинет
-/// продавца в браузере всё равно открылся бы без входа в эту организацию.
-/// Поэтому даём ссылку на веб-админку, где вход в панель работает.
+/// «Войти в кабинет магазина» (П-29.6): POST /api/admin/shops/{id}/enter-ticket →
+/// {url, expires_in, expires_at, name} — одноразовая ссылка на 60 с; открываем её
+/// сразу в Safari, там у браузера своя сессия администратора в кабинете этой
+/// организации (4 часа). Прежний POST …/enter не годится: он отмечает вход в
+/// сессии приложения, а не браузера. Не вышло (старый сервер) — в ошибке есть
+/// кнопка «Открыть веб-админку», как было раньше.
 struct ShopDetailView: View {
     let id: Int
     let onDeleted: ((Int) -> Void)?
@@ -25,6 +26,9 @@ struct ShopDetailView: View {
     @State private var previewError: String?
     @State private var deletedText: String?
     @State private var pendingDeletedText: String?
+    @State private var enterBusy = false
+    @State private var enterError: String?
+    @Environment(\.openURL) private var openURL
 
     init(id: Int, onDeleted: ((Int) -> Void)? = nil) {
         self.id = id
@@ -83,6 +87,19 @@ struct ShopDetailView: View {
         } message: {
             Text(previewError ?? "")
         }
+        .alert("Не удалось войти в кабинет", isPresented: enterErrorShown) {
+            // Запасной путь, как раньше: веб-админка, где «В панель» работает в браузере.
+            if let url = ShopsLabels.webAdminShopsURL {
+                Button("Открыть веб-админку") { openURL(url) }
+            }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(enterError ?? "")
+        }
+    }
+
+    private var enterErrorShown: Binding<Bool> {
+        Binding(get: { enterError != nil }, set: { if !$0 { enterError = nil } })
     }
 
     private var deletedShown: Binding<Bool> {
@@ -236,11 +253,19 @@ struct ShopDetailView: View {
                     Label("Витрина на сайте", systemImage: "storefront")
                 }
             }
-            if let url = ShopsLabels.webAdminShopsURL {
-                Link(destination: url) {
-                    Label("Панель организации — в веб-админке", systemImage: "rectangle.portrait.and.arrow.right")
+            // П-29.6: одноразовая ссылка входа в кабинет — вместо ссылки на веб-админку.
+            Button {
+                enterCabinet()
+            } label: {
+                HStack {
+                    Label("Войти в кабинет магазина", systemImage: "rectangle.portrait.and.arrow.right")
+                    if enterBusy {
+                        Spacer()
+                        ProgressView()
+                    }
                 }
             }
+            .disabled(enterBusy)
             Button(role: .destructive) {
                 loadDeletePreview()
             } label: {
@@ -256,8 +281,39 @@ struct ShopDetailView: View {
         } header: {
             Text("Действия")
         } footer: {
-            Text("Войти в панель управления организацией можно только в браузере: откройте веб-админку в Safari, войдите и нажмите «В панель» у этой организации. Если нужно лишь убрать организацию с витрины — поставьте статус «Заблокирована» вместо удаления.")
+            Text("«Войти в кабинет магазина» откроет кабинет этой организации в Safari. Ссылка одноразовая и живёт 60 секунд; вход в браузере действует 4 часа. Если нужно лишь убрать организацию с витрины — поставьте статус «Заблокирована» вместо удаления.")
         }
+    }
+
+    /// POST …/enter-ticket и сразу открыть ссылку в Safari (она живёт 60 с).
+    private func enterCabinet() {
+        guard !enterBusy else { return }
+        enterBusy = true
+        let path = "/api/admin/shops/" + String(id) + "/enter-ticket"
+        Task { @MainActor in
+            do {
+                let r = try await API.shared.post(path)
+                enterBusy = false
+                if let url = ShopDetailView.ticketURL(r["url"].string) {
+                    openURL(url)
+                } else {
+                    enterError = "Сервер не выдал ссылку для входа. Повторите позже."
+                }
+            } catch {
+                enterBusy = false
+                if !APIError.isCancellation(error) {
+                    enterError = APIError.describe(error)
+                }
+            }
+        }
+    }
+
+    /// Адрес из ответа: полный http(s) или путь сайта «/admin/enter?ticket=…».
+    static func ticketURL(_ raw: String?) -> URL? {
+        guard let s = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        if s.hasPrefix("https://") || s.hasPrefix("http://") { return URL(string: s) }
+        if s.hasPrefix("/") { return URL(string: API.baseURL.absoluteString + s) }
+        return nil
     }
 
     private func loadDeletePreview() {

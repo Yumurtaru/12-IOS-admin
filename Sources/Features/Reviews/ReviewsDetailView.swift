@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// Карточка отзыва (данные — строка списка: отдельной ручки «отзыв по id» нет).
+/// Карточка отзыва: строка списка, дополненная GET /api/admin/reviews/{id} (П-29.4:
+/// оценки по частям, заказ, ответы продавца). Старый сервер — только строка списка.
 /// Действия: одобрить / отклонить с причиной. Решение уходит с expected_status —
 /// если отзыв уже обработал другой модератор, сервер ответит 409 с объяснением.
 struct ReviewsDetailView: View {
     let model: PagedListModel
     @State private var review: JSON
     @State private var askReject = false
+    @State private var enrichTried = false
 
     init(review: JSON, model: PagedListModel) {
         self.model = model
@@ -21,12 +23,60 @@ struct ReviewsDetailView: View {
             mainSection
             photosSection
             infoSection
+            repliesSection
             actionsSection
             Section { JSONInspectorView(review) }
         }
         .navigationTitle("Отзыв #" + String(id))
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $askReject) { rejectSheet }
+        .task { await enrich() }
+    }
+
+    /// П-29.4: подробности карточки по id. Дописываем только недостающие поля —
+    /// статус, который модератор уже поменял на этом экране, не перетираем.
+    private func enrich() async {
+        guard !enrichTried, id > 0, review.object["replies"] == nil else { return }
+        enrichTried = true
+        let rid = id
+        guard let one = try? await API.shared.get("/api/admin/reviews/" + String(rid)), one.id == rid else { return }
+        var o = review.object
+        for (k, v) in one.object where o[k] == nil {
+            o[k] = v
+        }
+        review = .object(o)
+    }
+
+    /// Оценки по частям «еда 5 · доставка 4 · сервис 5» (только те, что поставлены).
+    private var partsText: String? {
+        var parts: [String] = []
+        let food = review["rating_food"].intValue
+        let delivery = review["rating_delivery"].intValue
+        let service = review["rating_service"].intValue
+        if food > 0 { parts.append("еда " + String(food)) }
+        if delivery > 0 { parts.append("доставка " + String(delivery)) }
+        if service > 0 { parts.append("сервис " + String(service)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private var repliesSection: some View {
+        let replies = review["replies"].array
+        if !replies.isEmpty {
+            Section("Ответ продавца") {
+                ForEach(Array(replies.enumerated()), id: \.offset) { pair in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(pair.element["text"].nonEmptyString ?? "—")
+                            .font(.subheadline)
+                            .textSelection(.enabled)
+                        Text(Fmt.date(pair.element["created_at"]))
+                            .font(.caption)
+                            .foregroundColor(Brand.muted)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
     }
 
     private var mainSection: some View {
@@ -61,6 +111,18 @@ struct ReviewsDetailView: View {
             shopRow
             KVRow("Автор", review["author"].string)
             KVRow("Дата", Fmt.date(review["created_at"]))
+            // Поля карточки по id (П-29.4) — у строки списка их нет.
+            if let parts = partsText {
+                KVRow("Оценки", parts)
+            }
+            if let v = review.object["is_verified"] {
+                KVRow("Покупка подтверждена", Fmt.yesNo(v.bool))
+            }
+            if let oid = review["order_id"].int, oid > 0 {
+                NavigationLink(destination: OrderDetailView(id: oid)) {
+                    KVRow("Заказ", "#" + String(oid))
+                }
+            }
         }
     }
 

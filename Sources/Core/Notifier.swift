@@ -1,4 +1,7 @@
 import BackgroundTasks
+// ObservableObject и @Published живут в Combine: Foundation/UIKit их не дают,
+// без этого импорта файл не соберётся («unknown attribute 'Published'»).
+import Combine
 import Foundation
 import UIKit
 import UserNotifications
@@ -11,18 +14,19 @@ import UserNotifications
 /// |------------------|--------------------------------------------------|------------------------------------------------------|
 /// | registrations    | GET /api/admin/dashboard?period=7                | data.pending_regs (shop_registrations.status=pending) |
 /// | publish          | GET /api/admin/dashboard?period=7                | data.pending_publish (shops.status=review)            |
-/// | documents        | GET /api/admin/documents?status=pending          | длина массива data (сервер отдаёт не больше 200)      |
+/// | documents        | GET /api/admin/inbox-counts (П-29.3)             | counts.documents; старый сервер — длина массива       |
+/// |                  | (запасной: GET /api/admin/documents?status=pending) | data (сервер отдаёт не больше 200)                 |
 /// | shopTopups       | GET /api/admin/wallets                           | длина data.pending (ручные: банк/наличные); если      |
 /// |                  |                                                  | wallets не ответил — dashboard data.pending_topups    |
 /// | onlinePayments   | GET /api/admin/wallets                           | длина data.orphan_online + длина data.stuck_online    |
 /// | walletReconcile  | GET /api/admin/wallets                           | data.reconcile.bad (расхождения ночной сверки)        |
 /// | userTopups       | GET /api/admin/user-topups?status=pending        | элементы data.items с stale == true (висят > суток;   |
 /// |                  |                                                  | сервер отдаёт не больше 200 последних)                |
-/// | returns          | GET /api/admin/returns?status=pending            | data.total; подпись — dashboard data.stale_returns    |
+/// | returns          | inbox-counts (запасной: GET /api/admin/returns?status=pending) | counts.returns / data.total; подпись — dashboard data.stale_returns |
 /// | reviews          | GET /api/admin/dashboard?period=7                | data.pending_reviews                                  |
 /// | complaints       | GET /api/admin/dashboard?period=7                | data.open_complaints (status=open)                    |
-/// | support          | GET /api/admin/support/tickets?status=open       | data.total                                            |
-/// | adReports        | GET /api/admin/ads/reports                       | data.total (жалобы на объявления status=new)          |
+/// | support          | inbox-counts (запасной: GET /api/admin/support/tickets?status=open) | counts.support_tickets / data.total |
+/// | adReports        | inbox-counts (запасной: GET /api/admin/ads/reports) | counts.ad_reports / data.total (status=new)        |
 /// | shopSupport      | GET /api/admin/shop-support/unread               | data.threads (переписки с непрочитанным от продавцов);|
 /// |                  |                                                  | подпись — data.messages (сколько сообщений)           |
 /// | cron             | GET /api/admin/dashboard?period=7                | data.cron.stale → 1, иначе 0                          |
@@ -274,24 +278,38 @@ final class Notifier: ObservableObject {
 
         async let dashF = Notifier.fetch("/api/admin/dashboard", ["period": "7"])
         async let walletsF = Notifier.fetch("/api/admin/wallets", [:])
-        async let docsF = Notifier.fetch("/api/admin/documents", ["status": "pending"])
-        async let returnsF = Notifier.fetch("/api/admin/returns", ["status": "pending", "page": "1"])
-        async let supportF = Notifier.fetch("/api/admin/support/tickets", ["status": "open", "page": "1"])
-        async let adsF = Notifier.fetch("/api/admin/ads/reports", ["page": "1"])
+        // П-29.3: лицензии, возвраты, обращения и жалобы на объявления — одним
+        // запросом (настоящие COUNT(*), у лицензий без обрезки на 200). Сводка,
+        // кошельки, пополнения клиентов и переписка остаются: из них берутся крон,
+        // онлайн-оплаты, сверка, «висят больше суток» и подписи.
+        async let inboxF = Notifier.fetch("/api/admin/inbox-counts", [:])
         async let userTopF = Notifier.fetch("/api/admin/user-topups", ["status": "pending"])
         // Переписка с организациями (волна А66): дешёвый счётчик без DDL на сервере.
         async let shopSupF = Notifier.fetch("/api/admin/shop-support/unread", [:])
         let dash = await dashF
         let wallets = await walletsF
-        let docs = await docsF
-        let rets = await returnsF
-        let support = await supportF
-        let ads = await adsF
+        let inbox = await inboxF
         let userTop = await userTopF
         let shopSup = await shopSupF
+        let inboxCounts = Notifier.inboxCounts(inbox.json)
+        // inbox-counts не ответил (старый сервер) — прежние запросы по спискам.
+        var docs = Fetched(json: nil, error: nil)
+        var rets = Fetched(json: nil, error: nil)
+        var support = Fetched(json: nil, error: nil)
+        var ads = Fetched(json: nil, error: nil)
+        if inboxCounts == nil {
+            async let docsF = Notifier.fetch("/api/admin/documents", ["status": "pending"])
+            async let returnsF = Notifier.fetch("/api/admin/returns", ["status": "pending", "page": "1"])
+            async let supportF = Notifier.fetch("/api/admin/support/tickets", ["status": "open", "page": "1"])
+            async let adsF = Notifier.fetch("/api/admin/ads/reports", ["page": "1"])
+            docs = await docsF
+            rets = await returnsF
+            support = await supportF
+            ads = await adsF
+        }
         guard Session.shared.isLoggedIn, !Task.isCancelled else { return }
         // Сколько запросов в опросе (все упали — показываем текст первой ошибки).
-        let sourceCount = 8
+        let sourceCount = inboxCounts == nil ? 8 : 5
 
         var next = counts
         var nextNotes = notes
@@ -322,10 +340,17 @@ final class Notifier: ObservableObject {
             fail("Кошельки", wallets)
         }
 
-        if let j = docs.json { next[.documents] = j.array.count } else { fail("Лицензии", docs) }
-        if let j = rets.json { next[.returns] = Notifier.totalOf(j) } else { fail("Возвраты", rets) }
-        if let j = support.json { next[.support] = Notifier.totalOf(j) } else { fail("Поддержка", support) }
-        if let j = ads.json { next[.adReports] = Notifier.totalOf(j) } else { fail("Объявления", ads) }
+        if let ic = inboxCounts {
+            next[.documents] = ic["documents"].intValue
+            next[.returns] = ic["returns"].intValue
+            next[.support] = ic["support_tickets"].intValue
+            next[.adReports] = ic["ad_reports"].intValue
+        } else {
+            if let j = docs.json { next[.documents] = j.array.count } else { fail("Лицензии", docs) }
+            if let j = rets.json { next[.returns] = Notifier.totalOf(j) } else { fail("Возвраты", rets) }
+            if let j = support.json { next[.support] = Notifier.totalOf(j) } else { fail("Поддержка", support) }
+            if let j = ads.json { next[.adReports] = Notifier.totalOf(j) } else { fail("Объявления", ads) }
+        }
         if let j = userTop.json {
             next[.userTopups] = j["items"].array.filter { $0["stale"].boolValue }.count
         } else { fail("Пополнения клиентов", userTop) }
@@ -407,6 +432,16 @@ final class Notifier: ObservableObject {
         } catch {
             return Fetched(json: nil, error: error)
         }
+    }
+
+    /// counts из GET /api/admin/inbox-counts (П-29.3), если в нём есть все нужные
+    /// поля; иначе nil — тогда опрос идёт прежними запросами по спискам.
+    private static func inboxCounts(_ j: JSON?) -> JSON? {
+        guard let c = j?["counts"], c.isObject else { return nil }
+        for key in ["documents", "returns", "support_tickets", "ad_reports"] where c[key].int == nil {
+            return nil
+        }
+        return c
     }
 
     /// total из постраничного ответа {items,total,…}; без total — длина items/массива.

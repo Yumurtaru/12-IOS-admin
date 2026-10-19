@@ -139,9 +139,15 @@ struct DashboardQueuesCard: View {
         ]
     }
 
+    /// П-29.7: оборвавшиеся онлайн-оплаты продавцов — теперь не входят в
+    /// pending_topups (подтвердить их руками нельзя), сервер отдаёт их отдельно.
+    /// Нет поля (старый сервер) или 0 — строки нет.
+    private var onlineAbandoned: Int { d["pending_topups_online"].int ?? 0 }
+
     var body: some View {
         let list = queues
         let waiting = list.filter { $0.count > 0 }
+        let online = onlineAbandoned
         SectionCard("Ждут вас") {
             if waiting.isEmpty {
                 Label("Всё разобрано", systemImage: "checkmark.seal")
@@ -152,7 +158,39 @@ struct DashboardQueuesCard: View {
                     DashboardQueueRow(queue: q)
                 }
             }
+            if online > 0 {
+                DashboardOnlineTopupsLine(count: online)
+            }
         }
+    }
+}
+
+/// Небольшая строка «Онлайн-оплаты оборвались: N» → «Кошельки» (П-29.7).
+struct DashboardOnlineTopupsLine: View {
+    let count: Int
+
+    init(count: Int) {
+        self.count = count
+    }
+
+    var body: some View {
+        NavigationLink(destination: AdminSection.wallets.makeRoot()) {
+            HStack(spacing: 6) {
+                Image(systemName: "creditcard")
+                    .font(.caption)
+                    .foregroundColor(Brand.muted)
+                Text("Онлайн-оплаты продавцов оборвались: " + String(count) + " — подтверждать не нужно")
+                    .font(.caption)
+                    .foregroundColor(Brand.muted)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundColor(Brand.muted)
+            }
+            .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
     }
 }
 

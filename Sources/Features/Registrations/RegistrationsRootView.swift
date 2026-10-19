@@ -126,7 +126,11 @@ struct RegistrationsListView: View {
     }
 
     private var emptyText: String {
-        if model.filter("status") == "pending" { return "Новых заявок нет. Остальные — в фильтре «Статус»." }
+        // Волна А75: при включённой автоактивации новые организации сюда не попадают —
+        // они сразу в «Магазинах» со статусом «Не опубликована — заполняется».
+        if model.filter("status") == "pending" {
+            return "Новых заявок нет. Остальные — в фильтре «Статус». Если включена автоактивация (Настройки → «Регистрация организаций»), новые организации сразу появляются в «Магазинах» неопубликованными."
+        }
         return "Заявок нет"
     }
 
@@ -167,7 +171,8 @@ struct RegistrationRow: View {
                     .font(.body.weight(.semibold))
                     .lineLimit(2)
                 Spacer(minLength: 6)
-                StatusBadge(status: reg["status"].string, label: ShopsLabels.registrationStatus(reg["status"].string))
+                // Пометка «автоматически» для заявок, одобренных при регистрации (А75).
+                StatusBadge(status: reg["status"].string, label: ShopsLabels.registrationStatusLabel(reg))
             }
             Text(meta)
                 .font(.caption)

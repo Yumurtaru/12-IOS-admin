@@ -86,7 +86,9 @@ enum DatabaseLongCall {
             let status = (pair.1 as? HTTPURLResponse)?.statusCode ?? 0
             let json = JSON.parse(raw)
             let env = API.unwrap(json, status: status)
-            if env.ok && (200..<300).contains(status) {
+            // Не-JSON ответ 200 (HTML прокси, портал Wi-Fi) — не успех: иначе копия/импорт
+            // «прошли» с пустыми данными, а проверка ниже была недостижима.
+            if env.ok && json != nil && (200..<300).contains(status) {
                 let res = APIResult(data: env.data, meta: env.meta, raw: json ?? .null, status: status)
                 return Output(result: res, rawData: raw)
             }

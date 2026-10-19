@@ -502,7 +502,10 @@ struct WalletsStuckRow: View {
         let currency = c["currency"].stringValue.uppercased()
         let paid = c["paid"].decimal ?? 0
         let refunded = c["refunded"].decimal ?? 0
-        let ok = c["status"].string == "succeeded" && currency == "RUB" && paid > 0 && refunded <= 0
+        // Сервер (resolve credit_actual) зачисляет и при ЧАСТИЧНОМ возврате — остаток
+        // «оплачено − возвращено»; отказ только при возврате целиком.
+        let net = refunded > 0 ? paid - refunded : paid
+        let ok = c["status"].string == "succeeded" && currency == "RUB" && paid > 0 && refunded + Decimal(1) / Decimal(100) < paid
         let paidText = WalletsStuckRow.amount(c["paid"], currency: currency)
         let statusText = WalletsLabels.yooStatus(c["status"].string)
         VStack(alignment: .leading, spacing: 6) {
@@ -519,7 +522,7 @@ struct WalletsStuckRow: View {
                     .foregroundColor(Brand.amber)
             }
             if ok {
-                creditButton(paid: paid, requested: c["requested"].decimal)
+                creditButton(paid: net, requested: c["requested"].decimal, partial: refunded > 0)
             } else {
                 Text(WalletsStuckRow.whyNot(status: c["status"].string, currency: currency, paid: paid, refunded: refunded))
                     .font(.footnote)
@@ -535,23 +538,27 @@ struct WalletsStuckRow: View {
         if status != "succeeded" { return "Зачислять нельзя: платёж не оплачен." }
         if currency != "RUB" { return "Зачислять нельзя: платёж не в рублях — верните деньги в кабинете ЮKassa." }
         if paid <= 0 { return "Зачислять нельзя: в платеже нулевая сумма." }
-        if refunded > 0 { return "Зачислять из приложения нельзя: по платежу был возврат. Разберите в кабинете ЮKassa." }
+        if refunded > 0 { return "Зачислять нечего: платёж возвращён целиком." }
         return "Зачислять нельзя."
     }
 
-    private func creditButton(paid: Decimal, requested: Decimal?) -> some View {
+    /// `paid` — что будет зачислено (при частичном возврате — остаток после возврата).
+    private func creditButton(paid: Decimal, requested: Decimal?, partial: Bool) -> some View {
         let paidText = Fmt.money(paid)
         let requestedText = Fmt.money(requested)
         let title = "Зачислить " + paidText + "?"
         let whoText = "Получатель: " + who + " (" + kindLabel + ")."
-        let msg = whoText + " В заявке было " + requestedText + ". Зачисляется ровно оплаченная сумма."
+        let tail = partial ? ". Часть платежа возвращена — зачисляется остаток." : ". Зачисляется ровно оплаченная сумма."
+        let msg = whoText + " В заявке было " + requestedText + tail
         let confirm = ConfirmAction(title: title, message: msg, confirmLabel: "Зачислить " + paidText)
         return ActionButton("Зачислить " + paidText, systemImage: "arrow.down.circle", style: .prominent,
                             confirm: confirm) {
             let id = item.id ?? 0
             let r = try await API.shared.post("/api/admin/topups/\(id)/resolve",
                                               body: ["kind": kind, "action": "credit_actual"])
-            let credited = r["amount"].decimal ?? paid
+            // При частичном возврате сервер в amount отдаёт оплаченное ДО возврата,
+            // а зачисляет остаток — показываем остаток.
+            let credited = partial ? paid : (r["amount"].decimal ?? paid)
             var text = "Зачислено " + Fmt.money(credited)
             if let bal = r["balance"].decimal {
                 text += ". Баланс: " + Fmt.money(bal)

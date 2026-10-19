@@ -7,8 +7,10 @@ enum ShopsLabels {
     static func status(_ s: String?) -> String {
         switch s ?? "" {
         case "pending": return "Заявка на рассмотрении"
-        case "draft": return "Не опубликована"
-        case "review": return "Ждёт публикации"
+        // Подписи — дословно shopStatusLabel() сайта (волна А75: новые организации
+        // сразу в draft, админка показывает «Не опубликована — заполняется»).
+        case "draft": return "Не опубликована — заполняется"
+        case "review": return "На проверке у администратора"
         case "active": return "Опубликована"
         case "paused": return "На паузе"
         case "blocked": return "Заблокирована"
@@ -97,6 +99,17 @@ enum ShopsLabels {
         case "": return "—"
         default: return s ?? "—"
         }
+    }
+
+    /// Заявка одобрена самой площадкой при регистрации (волна А75: auto_approved = 1).
+    static func registrationAutoApproved(_ reg: JSON) -> Bool {
+        reg["status"].string == "approved" && reg["auto_approved"].boolValue
+    }
+
+    /// Подпись статуса заявки с пометкой «автоматически», как в списке заявок на сайте.
+    static func registrationStatusLabel(_ reg: JSON) -> String {
+        let base = registrationStatus(reg["status"].string)
+        return registrationAutoApproved(reg) ? base + " · автоматически" : base
     }
 
     /// Тип движения по кошельку магазина (как в admin.js WTX).

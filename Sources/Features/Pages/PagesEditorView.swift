@@ -100,10 +100,22 @@ struct PagesEditorView: View {
     private var infoSection: some View {
         Section("Служебное") {
             KVRow("Адрес", "/page/" + page["slug"].stringValue, copyable: true)
+            // П-29.5: публичная страница /page/{slug} открывается по прямой ссылке (noindex).
+            if let url = PagesEditorView.publicURL(slug: page["slug"].nonEmptyString) {
+                Link(destination: url) {
+                    Label("Открыть на сайте", systemImage: "safari")
+                }
+            }
             KVRow("Meta title", page["meta_title"].string)
             KVRow("Meta description", page["meta_description"].string)
             KVRow("ID", page["id"].string, copyable: true)
         }
+    }
+
+    /// https://yumurta.ru/page/{slug}; нет адреса — nil.
+    static func publicURL(slug: String?) -> URL? {
+        guard let s = slug?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        return API.absoluteURL("/page/" + s)
     }
 
     // MARK: - Загрузка и сохранение

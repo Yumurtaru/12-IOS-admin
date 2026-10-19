@@ -3,15 +3,16 @@ import SwiftUI
 /// Раздел «Поддержка»: обращения пользователей (тикеты) — переписка, ответ,
 /// закрытие.
 ///
-/// Ручки: GET /api/admin/support/tickets (status open|answered|closed, page; поиска на
-/// сервере нет), GET /api/admin/support/tickets/{id}, POST …/{id}/reply {message},
+/// Ручки: GET /api/admin/support/tickets (status open|answered|closed, q, page; q — номер,
+/// тема, имя и телефон автора, текст переписки, П-29.5), GET /api/admin/support/tickets/{id}, POST …/{id}/reply {message},
 /// POST …/{id}/close.
 ///
 /// `openId` — id обращения: переписка открывается сразу.
 struct SupportRootView: View {
     let openId: Int?
 
-    @StateObject private var model = PagedListModel(path: "/api/admin/support/tickets", searchParam: nil,
+    // Поиск q (П-29.5): сервер ищет по номеру, теме, автору, телефону и тексту переписки.
+    @StateObject private var model = PagedListModel(path: "/api/admin/support/tickets", searchParam: "q",
                                                     filters: ["status": "open"])
     @State private var deepLinkActive = false
     @State private var didOpen = false
@@ -21,7 +22,7 @@ struct SupportRootView: View {
     }
 
     var body: some View {
-        AdminListScreen("Поддержка", model: model, searchPrompt: nil,
+        AdminListScreen("Поддержка", model: model, searchPrompt: "Номер, тема, автор, телефон, текст",
                         filters: [SupportFormat.statusFilter],
                         emptyText: "Обращений нет",
                         row: { item in SupportRow(ticket: item) },

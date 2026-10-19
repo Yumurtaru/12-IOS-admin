@@ -12,8 +12,8 @@ import SwiftUI
 /// Если доска не установлена на сервере, ручки отвечают 503 с объяснением —
 /// оно показывается вместо списка.
 ///
-/// `openId` — id объявления: его карточка откроется, если оно есть на первой
-/// странице списка (ручки «объявление по id» в админке нет).
+/// `openId` — id объявления: карточка берётся из GET /api/admin/ads/{id} (П-29.4);
+/// старый сервер без этой ручки — откроется, если объявление есть на первой странице списка.
 struct AdsRootView: View {
     let openId: Int?
 
@@ -26,6 +26,8 @@ struct AdsRootView: View {
     @State private var deepLinkPending: Bool
     @State private var deepLinkItem: JSON?
     @State private var deepLinkActive = false
+    /// Запрос карточки по id уже сделан (удачно или нет) — дальше можно искать в списке.
+    @State private var deepLinkByIdTried = false
 
     init(openId: Int? = nil, initialTab: AdsTab? = nil) {
         self.openId = openId
@@ -49,6 +51,7 @@ struct AdsRootView: View {
         .onAppear(perform: initialTab)
         .onReceive(ads.$items) { items in findDeepLink(items) }
         .navigationDestination(isPresented: $deepLinkActive) { deepLinkDestination }
+        .task { await openDeepLinkById() }
     }
 
     @ViewBuilder
@@ -87,7 +90,24 @@ struct AdsRootView: View {
         Task { await stats.loadIfNeeded() }
     }
 
+    /// П-29.4: объявление по id — откроется, даже если его нет на первой странице.
+    /// Не вышло (старый сервер, доска не установлена) — как раньше, ищем в списке.
+    private func openDeepLinkById() async {
+        guard deepLinkPending, !deepLinkByIdTried, let id = openId, id > 0 else { return }
+        let one = try? await API.shared.get("/api/admin/ads/" + String(id))
+        deepLinkByIdTried = true
+        if let item = one, item.id == id, deepLinkPending {
+            deepLinkPending = false
+            deepLinkItem = item
+            deepLinkActive = true
+            return
+        }
+        findDeepLink(ads.items)
+    }
+
     private func findDeepLink(_ items: [JSON]) {
+        // Сначала ждём ответа карточки по id (openDeepLinkById), потом — список.
+        guard deepLinkByIdTried else { return }
         guard deepLinkPending, let id = openId, !items.isEmpty else { return }
         deepLinkPending = false
         if let found = items.first(where: { $0.id == id }) {

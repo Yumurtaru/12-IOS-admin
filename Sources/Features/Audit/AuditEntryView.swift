@@ -3,8 +3,9 @@ import UIKit
 
 /// Запись журнала целиком: кто, когда, что, с какого IP и что записано в new_json.
 ///
-/// Сервер пишет в журнал только НОВЫЕ значения (колонка new_json); прежних
-/// значений (old_json) в журнале площадки нет — экран так и говорит.
+/// П-29.5: при правке магазина, промокода, категории, города, жалобы, страницы и
+/// модерации отзыва сервер пишет и прежние значения (old_json) — тогда экран
+/// показывает «Было» / «Стало» по каждому полю. У старых записей old_json = null.
 struct AuditEntryView: View {
     let entry: JSON
 
@@ -26,6 +27,14 @@ struct AuditEntryView: View {
     }
 
     private var detailsText: String? { entry["new_json"].nonEmptyString }
+
+    /// old_json (П-29.5) — так же: строка из базы или объект; null у старых записей.
+    private var oldDetails: JSON? {
+        let v = entry["old_json"]
+        if v.isObject || v.isArray { return v }
+        guard let s = v.nonEmptyString, let data = s.data(using: .utf8) else { return nil }
+        return JSON.parse(data)
+    }
 
     private var whoText: String {
         let name = entry["name"].nonEmptyString ?? "Система"
@@ -56,6 +65,7 @@ struct AuditEntryView: View {
                 KVRow("IP", entry["ip"].string, copyable: true)
             }
             linkSection
+            diffSection
             detailsSection
             Section {
                 JSONInspectorView(entry)
@@ -80,11 +90,44 @@ struct AuditEntryView: View {
         }
     }
 
+    /// «Было» / «Стало» по полям (П-29.5). Нет old_json — секции нет.
+    @ViewBuilder
+    private var diffSection: some View {
+        if let old = oldDetails {
+            let new = details ?? .null
+            if old.isObject && (new.isObject || new.isNull) {
+                Section {
+                    ForEach(AuditEntryView.diffKeys(old: old, new: new), id: \.self) { key in
+                        AuditDiffRow(key: key, old: old.object[key], new: new.object[key])
+                    }
+                } header: {
+                    Text("Что изменилось")
+                }
+            } else {
+                Section {
+                    JSONInspectorView(old, title: "Было", expanded: true)
+                } header: {
+                    Text("Прежние значения")
+                }
+            }
+        }
+    }
+
+    /// Поля для сравнения: сначала из «Стало», затем те, что есть только в «Было».
+    static func diffKeys(old: JSON, new: JSON) -> [String] {
+        var keys = JSONNodeList.orderedKeys(new.object)
+        for k in JSONNodeList.orderedKeys(old.object) where !keys.contains(k) {
+            keys.append(k)
+        }
+        return keys
+    }
+
     @ViewBuilder
     private var detailsSection: some View {
         Section {
             if let d = details, d.isObject || d.isArray {
-                JSONInspectorView(d, title: "Новые значения", expanded: true)
+                // Есть «Было» — сравнение уже выше, полный список новых значений свёрнут.
+                JSONInspectorView(d, title: "Новые значения", expanded: oldDetails == nil)
             } else if let t = detailsText {
                 Text(t)
                     .font(.footnote.monospaced())
@@ -104,8 +147,96 @@ struct AuditEntryView: View {
         } header: {
             Text("Что записано")
         } footer: {
-            Text("Журнал хранит только новые значения; прежние значения сервер не записывает.")
+            Text("Прежние значения сервер записывает при правке магазина, промокода, категории, города, жалобы, страницы и модерации отзыва; у остальных и у старых записей — только новые.")
         }
+    }
+}
+
+/// Одно поле записи: «Было» → «Стало» (П-29.5). Нет значения — «—».
+struct AuditDiffRow: View {
+    let key: String
+    let old: JSON?
+    let new: JSON?
+
+    init(key: String, old: JSON?, new: JSON?) {
+        self.key = key
+        self.old = old
+        self.new = new
+    }
+
+    private var oldText: String { old?.raw ?? "—" }
+    private var newText: String { new?.raw ?? "—" }
+    /// old_json — снимок строки базы («1», «12.50»), new_json — типизированный (true, 12.5):
+    /// сравниваем по смыслу, иначе одинаковые значения подсвечивались бы как изменённые.
+    private var changed: Bool { !AuditDiffRow.sameValue(old, new) }
+
+    static func sameValue(_ a: JSON?, _ b: JSON?) -> Bool {
+        let x = a ?? .null
+        let y = b ?? .null
+        if x.isNull || y.isNull { return x.isNull && y.isNull }
+        // true/false против "1"/"0" (и 1/0) — одно и то же.
+        if case .bool(let bx) = x, let by = boolLike(y) { return bx == by }
+        if case .bool(let by) = y, let bx = boolLike(x) { return bx == by }
+        // Числа — численно («12.50» == 12.5).
+        if let dx = numberLike(x), let dy = numberLike(y) { return dx == dy }
+        return x.raw == y.raw
+    }
+
+    /// Значение как число: число или строка-число; иначе nil.
+    private static func numberLike(_ j: JSON) -> Decimal? {
+        switch j {
+        case .number, .string: return j.decimal
+        default: return nil
+        }
+    }
+
+    /// Значение как логическое: bool, 1/0, «1»/«0», «true»/«false»; иначе nil.
+    private static func boolLike(_ j: JSON) -> Bool? {
+        switch j {
+        case .bool(let b): return b
+        case .number(let d):
+            if d == 1 { return true }
+            if d == 0 { return false }
+            return nil
+        case .string(let s):
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if t == "1" || t == "true" { return true }
+            if t == "0" || t == "false" { return false }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(key)
+                .font(.caption.monospaced())
+                .foregroundColor(Brand.muted)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("Было")
+                    .font(.caption2)
+                    .foregroundColor(Brand.muted)
+                    .frame(width: 40, alignment: .leading)
+                Text(oldText)
+                    .font(.footnote)
+                    .foregroundColor(changed ? Brand.red : Brand.text)
+                    .lineLimit(8)
+                    .textSelection(.enabled)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("Стало")
+                    .font(.caption2)
+                    .foregroundColor(Brand.muted)
+                    .frame(width: 40, alignment: .leading)
+                Text(newText)
+                    .font(.footnote)
+                    .foregroundColor(changed ? Brand.green : Brand.text)
+                    .lineLimit(8)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -173,7 +304,7 @@ enum AuditLabels {
         "create": "Создание", "update": "Изменение", "delete": "Удаление",
         "block": "Блокировка", "unblock": "Разблокировка", "moderate": "Модерация",
         "publish": "Публикация", "publish_reject": "Отказ в публикации", "import": "Импорт",
-        "enter_panel": "Вход в панель магазина", "grant_admin": "Выдача прав администратора",
+        "enter_panel": "Вход в панель магазина", "enter_ticket": "Ссылка входа в кабинет магазина", "grant_admin": "Выдача прав администратора",
         "revoke_admin": "Снятие прав администратора", "topup": "Пополнение",
         "confirm_topup": "Подтверждение пополнения", "reject_topup": "Отказ в пополнении",
         "topup_reject": "Отказ в пополнении", "topup_recheck": "Перепроверка пополнения",

@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Заявка на возврат. Отдельной ручки «возврат по id» на сервере нет, поэтому
-/// строку берём из списка (initial) или ищем: GET /api/admin/returns?q={id} — поиск
-/// совпадает и с номером возврата, и с номером заказа, нужную строку выбираем по id.
+/// Заявка на возврат: GET /api/admin/returns/{id} (П-29.4) — строка списка плюс
+/// причина, позиции, фото, журнал. Старый сервер без этой ручки — ищем, как раньше:
+/// GET /api/admin/returns?q={id} — поиск совпадает и с номером возврата, и с номером
+/// заказа, нужную строку выбираем по id.
 ///
 /// Действия как на сайте: на рассмотрении — «Одобрить» (подтверждение с суммой) и
 /// «Отклонить» (причина); деньгами вручную и одобрен — «Деньги выплачены».
@@ -15,6 +16,7 @@ struct ReturnDetailView: View {
     @State private var refreshError: String?
     @State private var askReject = false
     @State private var askPaid = false
+    @State private var enrichTried = false
 
     init(id: Int, initial: JSON? = nil, onChanged: (() -> Void)? = nil) {
         self.id = id
@@ -35,7 +37,11 @@ struct ReturnDetailView: View {
         .navigationTitle("Возврат #" + String(id))
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            if state == .idle { await load() }
+            if state == .idle {
+                await load()
+            } else {
+                await enrich()
+            }
         }
         .sheet(isPresented: $askReject) {
             ReturnsRejectSheet(count: 1) { note in
@@ -59,6 +65,8 @@ struct ReturnDetailView: View {
             }
             headerSection
             linksSection
+            // Подробности карточки по id (П-29.4); у строки списка их нет — секций не будет.
+            ReturnDetailExtraSections(row: row)
             actionsSection
             Section {
                 JSONInspectorView(row)
@@ -161,6 +169,14 @@ struct ReturnDetailView: View {
 
     private func load() async {
         if row.isNull { state = .loading }
+        // П-29.4: карточка по id — свежая и с подробностями. Старый сервер такой
+        // ручки не знает — тогда, как раньше, ищем строку в списке.
+        if let one = try? await API.shared.get("/api/admin/returns/" + String(id)), one.id == id {
+            row = one
+            state = .loaded
+            refreshError = nil
+            return
+        }
         do {
             let data = try await API.shared.get("/api/admin/returns", query: ["q": String(id)])
             let list = data["items"].array
@@ -181,9 +197,208 @@ struct ReturnDetailView: View {
         }
     }
 
+    /// Открыли из списка (строка без подробностей) — тихо дополнить карточкой по id
+    /// (П-29.4). Не вышло (старый сервер, нет сети) — остаётся строка списка, без ошибки.
+    private func enrich() async {
+        guard !enrichTried, row.object["log"] == nil else { return }
+        enrichTried = true
+        guard let one = try? await API.shared.get("/api/admin/returns/" + String(id)), one.id == id else { return }
+        // Только недостающие поля: статус, уже обновлённый действием на этом экране, не перетираем.
+        var o = row.object
+        for (k, v) in one.object where o[k] == nil {
+            o[k] = v
+        }
+        row = .object(o)
+    }
+
     private func afterAction() async {
         await load()
         onChanged?()
         Task { await Notifier.shared.refresh(force: true) }
+    }
+}
+
+/// Подробности заявки из GET /api/admin/returns/{id} (П-29.4): слова покупателя,
+/// комментарий модератора, телефон, заказ, позиции, фото, журнал статусов.
+/// В строке списка этих полей нет — тогда секции просто не показываются.
+struct ReturnDetailExtraSections: View {
+    let row: JSON
+
+    init(row: JSON) {
+        self.row = row
+    }
+
+    var body: some View {
+        Group {
+            detailsSection
+            itemsSection
+            photosSection
+            logSection
+        }
+    }
+
+    @ViewBuilder
+    private var detailsSection: some View {
+        let reason = row["reason_text"].nonEmptyString
+        let note = row["moderator_note"].nonEmptyString
+        let phone = row["client_phone"].nonEmptyString
+        let order = row["order"]
+        if reason != nil || note != nil || phone != nil || order.isObject {
+            Section("Подробности") {
+                if let r = reason {
+                    textBlock("Слова покупателя", r)
+                }
+                if let n = note {
+                    textBlock("Комментарий модератора", n)
+                }
+                if let p = phone {
+                    phoneRow(p)
+                }
+                if order.isObject {
+                    KVRow("Заказ", ReturnDetailExtraSections.orderText(order))
+                }
+            }
+        }
+    }
+
+    private func textBlock(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            FieldTitle(title)
+            Text(text)
+                .font(.subheadline)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func phoneRow(_ phone: String) -> some View {
+        if let url = Fmt.phoneURL(phone) {
+            Link(destination: url) { KVRow("Телефон клиента", Fmt.phone(phone)) }
+        } else {
+            KVRow("Телефон клиента", phone)
+        }
+    }
+
+    /// «№12 · 1 500,00 ₽ · Доставлен».
+    static func orderText(_ order: JSON) -> String {
+        var parts: [String] = []
+        if let n = order["daily_number"].nonEmptyString { parts.append("№" + n) }
+        if !order["total"].isNull { parts.append(Fmt.money(order["total"])) }
+        if let st = order["status"].nonEmptyString { parts.append(OrdersLabels.status(st)) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Частичный возврат — по типу заявки, а не по items: у частичного items_json
+    /// бывает {"unknown":true} или [] (позиции не записаны).
+    private var isPartial: Bool { row["type"].string == "partial" }
+
+    /// Строки позиций: частичный возврат — items [{item_id, qty}] с названиями из
+    /// order_items (не читаются — пусто); полный — все позиции заказа.
+    private var itemLines: [String] {
+        let orderItems = row["order_items"].array
+        var names: [Int: String] = [:]
+        for it in orderItems {
+            if let iid = it.id { names[iid] = it["name"].stringValue }
+        }
+        var out: [String] = []
+        let picked = row["items"].array
+        if !picked.isEmpty {
+            for it in picked {
+                let iid = it["item_id"].intValue
+                let name = names[iid] ?? ("Позиция #" + String(iid))
+                out.append(name + " × " + Fmt.number(it["qty"]))
+            }
+            return out
+        }
+        // Частичный без читаемых позиций — весь заказ не показываем, это было бы неправдой.
+        if isPartial { return out }
+        for it in orderItems {
+            let name = it["name"].nonEmptyString ?? "—"
+            out.append(name + " × " + Fmt.number(it["qty"]))
+        }
+        return out
+    }
+
+    @ViewBuilder
+    private var itemsSection: some View {
+        let lines = itemLines
+        let partial = isPartial
+        if !lines.isEmpty {
+            let title: String = partial ? "Что возвращают" : "Позиции заказа (возврат всего заказа)"
+            Section(title) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { pair in
+                    Text(pair.element)
+                        .font(.subheadline)
+                }
+            }
+        } else if partial && row["order_items"].isArray {
+            // Карточка по id пришла, а позиции частичного возврата не записаны.
+            Section("Что возвращают") {
+                Text("Какие позиции — не указано")
+                    .font(.subheadline)
+                    .foregroundColor(Brand.muted)
+            }
+        }
+    }
+
+    /// Пути фото заявки (строки; относительные — от /assets/uploads/).
+    private var photoPaths: [String] {
+        var out: [String] = []
+        for p in row["photos"].array {
+            if let path = ModerationMedia.uploadsPath(p.string) { out.append(path) }
+        }
+        return out
+    }
+
+    @ViewBuilder
+    private var photosSection: some View {
+        let paths = photoPaths
+        if !paths.isEmpty {
+            Section("Фото (" + String(paths.count) + ")") {
+                ReviewsPhotoStrip(paths: paths, size: 120)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var logSection: some View {
+        let log = row["log"].array
+        if !log.isEmpty {
+            Section("История") {
+                ForEach(Array(log.enumerated()), id: \.offset) { pair in
+                    ReturnDetailLogRow(entry: pair.element)
+                }
+            }
+        }
+    }
+}
+
+/// Строка журнала статусов возврата: статус, когда, комментарий.
+struct ReturnDetailLogRow: View {
+    let entry: JSON
+
+    init(entry: JSON) {
+        self.entry = entry
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                ReturnsStatusBadge(status: entry["status"].string)
+                Spacer(minLength: 8)
+                Text(Fmt.date(entry["created_at"]))
+                    .font(.caption)
+                    .foregroundColor(Brand.muted)
+            }
+            if let c = entry["comment"].nonEmptyString {
+                Text(c)
+                    .font(.caption)
+                    .foregroundColor(Brand.text)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }

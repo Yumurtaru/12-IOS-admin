@@ -118,20 +118,40 @@ push'ем, не показываются (чтобы не было двух ув
 |---|---|---|
 | Заявки на регистрацию | `GET /api/admin/dashboard?period=7` | `pending_regs` |
 | Ждут публикации | `GET /api/admin/dashboard?period=7` | `pending_publish` |
-| Лицензии на проверке | `GET /api/admin/documents?status=pending` | длина списка (сервер отдаёт до 200) |
+| Лицензии на проверке | `GET /api/admin/inbox-counts` | `counts.documents` (старый сервер — длина `GET /api/admin/documents?status=pending`, до 200) |
 | Пополнения продавцов | `GET /api/admin/wallets` | длина `pending` (запасной — `dashboard.pending_topups`) |
 | Онлайн-оплаты без зачисления | `GET /api/admin/wallets` | `orphan_online` + `stuck_online` |
 | Расхождения сверки | `GET /api/admin/wallets` | `reconcile.bad` |
 | Пополнения клиентов > суток | `GET /api/admin/user-topups?status=pending` | элементы с `stale = true` |
-| Возвраты | `GET /api/admin/returns?status=pending` | `total` (подпись — `dashboard.stale_returns`) |
+| Возвраты | `GET /api/admin/inbox-counts` | `counts.returns` (старый сервер — `total` из `GET /api/admin/returns?status=pending`; подпись — `dashboard.stale_returns`) |
 | Отзывы | `GET /api/admin/dashboard?period=7` | `pending_reviews` |
 | Жалобы | `GET /api/admin/dashboard?period=7` | `open_complaints` |
-| Поддержка | `GET /api/admin/support/tickets?status=open` | `total` |
-| Жалобы на объявления | `GET /api/admin/ads/reports` | `total` |
+| Поддержка | `GET /api/admin/inbox-counts` | `counts.support_tickets` (старый сервер — `total` из `GET /api/admin/support/tickets?status=open`) |
+| Жалобы на объявления | `GET /api/admin/inbox-counts` | `counts.ad_reports` (старый сервер — `total` из `GET /api/admin/ads/reports`) |
 | Сообщения продавцам | `GET /api/admin/shop-support/unread` | `threads` |
 | Крон не работает | `GET /api/admin/dashboard?period=7` | `cron.stale` |
+
+Если `inbox-counts` не ответил (сервер до волны А72), четыре счётчика берутся
+прежними запросами по спискам.
 
 Тап по строке или уведомлению открывает раздел сразу на нужной вкладке:
 «Ждут публикации» → «Заявки магазинов → Публикация», «Лицензии» → «Заявки
 магазинов → Лицензии». Ссылка вида `yumurta-admin://section/registrations?tab=publish`
 делает то же самое.
+
+## Карточки по номеру и вход в кабинет (П-29, волна А72)
+
+- Push или ссылка с номером открывает карточку сразу по id, даже если объекта нет
+  на первой странице списка: заявки магазинов, возвраты, отзывы, объявления, города,
+  журнал (`GET /api/admin/<раздел>/{id}`). На старом сервере — прежний поиск по списку.
+  Карточки возврата, отзыва и объявления показывают подробности: слова покупателя,
+  позиции, фото, историю, оценки по частям, ответы продавца, описание и контакты, жалобы.
+- «Поддержка» — поиск по номеру, теме, автору, телефону и тексту переписки.
+- «Журнал» — у правок магазина, промокода, категории, города, жалобы, страницы и
+  модерации отзыва видно «Было» / «Стало» по каждому полю.
+- «Страницы» — «Открыть на сайте» (`/page/{slug}`).
+- Карточка магазина — «Войти в кабинет магазина»: одноразовая ссылка
+  (`POST /api/admin/shops/{id}/enter-ticket`, живёт 60 с) сразу открывается в Safari,
+  вход в браузере действует 4 часа.
+- «Сводка» — оборвавшиеся онлайн-оплаты продавцов отдельной строкой
+  (`pending_topups_online`); «Пополнения к подтверждению» — только ручные переводы.

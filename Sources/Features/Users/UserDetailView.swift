@@ -247,7 +247,10 @@ struct UsersShopsSection: View {
                             Text(shop["name"].nonEmptyString ?? ("Магазин #" + shop["id"].stringValue))
                                 .lineLimit(1)
                             Spacer()
-                            StatusBadge(status: shop["status"].string)
+                            // Статус организации — подписью магазинов (draft = «Не опубликована —
+                            // заполняется»), а не общей «Черновик/Активен».
+                            StatusBadge(ShopsLabels.status(shop["status"].string),
+                                        color: ShopsLabels.statusColor(shop["status"].string))
                         }
                     }
                 }

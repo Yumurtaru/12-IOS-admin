@@ -6,7 +6,8 @@ import SwiftUI
 ///
 /// Сервер: GET/POST /api/admin/cities, PUT/DELETE /api/admin/cities/{id}.
 /// Список постраничный ({items,total,page,pages}, по 50, по алфавиту).
-/// `openId` — id города: ищем его по страницам списка и открываем правку.
+/// `openId` — id города: берём его из GET /api/admin/cities/{id} (П-29.4; старый
+/// сервер — ищем по страницам списка) и открываем правку.
 struct CitiesRootView: View {
     let openId: Int?
 
@@ -111,7 +112,7 @@ struct CitiesRootView: View {
         }
     }
 
-    /// Переход по ссылке: у сервера нет GET /cities/{id}, поэтому листаем страницы списка.
+    /// Переход по ссылке: город по id, без ручки на сервере — по страницам списка.
     private func openDeepLinkIfNeeded() async {
         guard let id = openId, !deepLinkStarted else { return }
         deepLinkStarted = true
@@ -135,9 +136,14 @@ struct CitiesEditTarget: Identifiable {
     let city: JSON?
 }
 
-/// Поиск города по id в постраничном списке (до 60 страниц по 50).
+/// Поиск города по id: GET /api/admin/cities/{id}, иначе в постраничном списке (до 60 страниц по 50).
 enum CitiesLookup {
     static func find(id: Int) async throws -> JSON? {
+        // П-29.4: одна строка по id (как в списке). Старый сервер такой ручки
+        // не знает — тогда, как раньше, листаем страницы списка.
+        if let one = try? await API.shared.get("/api/admin/cities/" + String(id)), one.id == id {
+            return one
+        }
         var page = 1
         while page <= 60 {
             let data = try await API.shared.get("/api/admin/cities", query: ["page": String(page)])

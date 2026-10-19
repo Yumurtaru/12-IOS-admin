@@ -7,8 +7,9 @@ import SwiftUI
 /// POST /api/admin/reviews/{id}/moderate {decision, note, expected_status},
 /// GET /api/admin/review-replies (q, page), DELETE /api/admin/review-replies/{id}.
 ///
-/// `openId` — id отзыва: откроется его карточка, если он есть на первой странице
-/// очереди «На модерации» (отдельной ручки «отзыв по id» нет).
+/// `openId` — id отзыва: карточка берётся из GET /api/admin/reviews/{id} (П-29.4);
+/// старый сервер без этой ручки — откроется, если отзыв есть на первой странице
+/// очереди «На модерации».
 struct ReviewsRootView: View {
     let openId: Int?
 
@@ -18,6 +19,8 @@ struct ReviewsRootView: View {
     @State private var deepLinkPending: Bool
     @State private var deepLinkItem: JSON?
     @State private var deepLinkActive = false
+    /// Запрос карточки по id уже сделан (удачно или нет) — дальше можно искать в списке.
+    @State private var deepLinkByIdTried = false
 
     init(openId: Int? = nil) {
         self.openId = openId
@@ -40,6 +43,7 @@ struct ReviewsRootView: View {
         .navigationDestination(isPresented: $deepLinkActive) {
             deepLinkDestination
         }
+        .task { await openDeepLinkById() }
     }
 
     @ViewBuilder
@@ -62,7 +66,24 @@ struct ReviewsRootView: View {
         .background(Brand.bg)
     }
 
+    /// П-29.4: отзыв по id — откроется, даже если его нет на первой странице.
+    /// Не вышло (старый сервер) — как раньше, ищем в загруженном списке.
+    private func openDeepLinkById() async {
+        guard deepLinkPending, !deepLinkByIdTried, let id = openId, id > 0 else { return }
+        let one = try? await API.shared.get("/api/admin/reviews/" + String(id))
+        deepLinkByIdTried = true
+        if let item = one, item.id == id, deepLinkPending {
+            deepLinkPending = false
+            deepLinkItem = item
+            deepLinkActive = true
+            return
+        }
+        findDeepLink(in: reviews.items)
+    }
+
     private func findDeepLink(in items: [JSON]) {
+        // Сначала ждём ответа карточки по id (openDeepLinkById), потом — список.
+        guard deepLinkByIdTried else { return }
         guard deepLinkPending, let id = openId, !items.isEmpty else { return }
         deepLinkPending = false
         if let found = items.first(where: { $0.id == id }) {

@@ -3,13 +3,13 @@ import SwiftUI
 /// Раздел «Журнал» — кто и что сделал в админке (как admin/audit.php).
 ///
 /// GET /api/admin/audit ?page&user&action&entity&from&to&q
-///   → {items:[{id, action, entity_type, entity_id, created_at, ip, new_json, user_id, name}],
+///   → {items:[{id, action, entity_type, entity_id, created_at, ip, old_json, new_json, user_id, name}],
 ///      total, page, pages, actions:[…], entities:[…], admins:[{id, name}]}
 /// Списки для фильтров приходят в том же ответе (сервер кеширует их на 10 минут).
 /// Страница — 50 записей, новые сверху.
 ///
-/// Deep link: `openId` — номер записи журнала; ручки «одна запись» на сервере нет,
-/// поэтому запись ищется по страницам журнала (двоичным поиском по номерам).
+/// Deep link: `openId` — номер записи журнала: GET /api/admin/audit/{id} (П-29.4);
+/// старый сервер — запись ищется по страницам журнала (двоичным поиском по номерам).
 struct AuditRootView: View {
     let openId: Int?
 
@@ -350,11 +350,16 @@ struct AuditSearchingBadge: View {
     }
 }
 
-/// Поиск записи журнала по номеру. Отдельной ручки нет, а журнал отдаётся
-/// страницами по 50 строк от новых к старым (ORDER BY id DESC). Поэтому —
-/// двоичный поиск по страницам: на 10 000 страниц хватает ~14 запросов.
+/// Поиск записи журнала по номеру: GET /api/admin/audit/{id} (П-29.4). Старый
+/// сервер без этой ручки — журнал отдаётся страницами по 50 строк от новых к
+/// старым (ORDER BY id DESC), поэтому двоичный поиск по страницам: на 10 000
+/// страниц хватает ~14 запросов.
 enum AuditDeepLink {
     static func find(id: Int) async throws -> JSON? {
+        // П-29.4: сначала одна запись по id; не вышло — прежний поиск по страницам.
+        if let one = try? await API.shared.get("/api/admin/audit/" + String(id)), one.id == id {
+            return one
+        }
         let first = try await page(1)
         if let hit = match(first, id: id) { return hit }
         let firstItems = first["items"].array

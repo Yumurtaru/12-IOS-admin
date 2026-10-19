@@ -6,8 +6,8 @@ import SwiftUI
 /// Сервер: GET /api/admin/pages (id, slug, title), GET /api/admin/pages/{id},
 /// POST /api/admin/pages {title, content} (адрес-slug сервер строит из заголовка),
 /// PUT /api/admin/pages/{id} {title, content}. Удаления на сервере нет.
-/// Публичного адреса /page/{slug} на сайте сейчас нет (routes/public.php), поэтому
-/// «открыть на сайте» не предлагаем — вместо этого предпросмотр HTML в приложении.
+/// Публичная страница /page/{slug} есть с волны А72 (П-29.5: по прямой ссылке, noindex) —
+/// в редакторе кнопка «Открыть на сайте»; предпросмотр HTML в приложении остаётся.
 /// `openId` — id страницы: сразу открывается её редактор.
 struct PagesRootView: View {
     let openId: Int?
