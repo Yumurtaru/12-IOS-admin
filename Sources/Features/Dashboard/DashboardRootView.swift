@@ -136,6 +136,15 @@ struct DashboardQueuesCard: View {
                            symbol: AdminSection.support.symbol, destination: AdminSection.support.makeRoot()),
             DashboardQueue(id: "ads", title: "Жалобы на объявления", count: notifier.count(.adReports),
                            symbol: AdminSection.ads.symbol, destination: AdminSection.ads.makeRoot()),
+            // «Курьеры Yumurta»: счётчики из /api/admin/pool/summary (опрос Notifier).
+            DashboardQueue(id: "couriers", title: "Заявки курьеров", count: notifier.count(.couriers),
+                           symbol: AdminSection.couriers.symbol, destination: AdminSection.couriers.makeRoot()),
+            DashboardQueue(id: "courierProblems", title: "Проблемы с доставкой курьеров",
+                           count: notifier.count(.courierProblems), symbol: "exclamationmark.bubble",
+                           destination: AdminSection.couriers.makeRoot(subtab: "problems")),
+            DashboardQueue(id: "courierComplaints", title: "Жалобы по доставкам курьеров",
+                           count: notifier.count(.courierComplaints), symbol: "hand.raised",
+                           destination: AdminSection.couriers.makeRoot(subtab: "complaints")),
         ]
     }
 

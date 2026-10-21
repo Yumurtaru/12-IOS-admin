@@ -9,8 +9,10 @@ struct InboxView: View {
         NotifyCategory.allCases.filter { notifier.count($0) > 0 }
     }
 
+    /// Пустые очереди. Категории «Курьеров» без счётчика (сервер без раздела или
+    /// раздел выключен) не показываем — их строка вела бы в 404 (Notifier.isListed).
     private var clear: [NotifyCategory] {
-        NotifyCategory.allCases.filter { notifier.count($0) == 0 }
+        NotifyCategory.allCases.filter { notifier.count($0) == 0 && notifier.isListed($0) }
     }
 
     var body: some View {

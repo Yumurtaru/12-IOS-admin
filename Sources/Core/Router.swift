@@ -126,6 +126,16 @@ final class AppRouter: ObservableObject {
         // Вкладка «Жалобы» раздела «Объявления» (id жалобы объявлением не является).
         case "ad_report": return (.ads, nil, "reports")
         case "moderation_backlog": return (.reviews, nil, nil)
+        // «Курьеры Yumurta» (core/CourierPool.php, notifyAdminsEvent):
+        // pool_courier — новая заявка курьера, id = user_id курьера → сразу его карточка;
+        // pool_problem — проблема с доставкой (id проблемы, есть shop_id) → вкладка «Проблемы»
+        // и сразу карточка этой проблемы; pool_complaint — жалоба по вызову (id жалобы,
+        // есть call_id) → вкладка «Жалобы» и карточка жалобы. Карточки по id —
+        // GET /api/admin/pool/problems|complaints/{id} (волна А92, П-45 №2); 404 или старый
+        // сервер без них — остаётся вкладка (CouriersRootView, CourierIssueDetailView).
+        case "pool_courier": return (.couriers, "id", nil)
+        case "pool_problem": return (.couriers, "id", "problems")
+        case "pool_complaint": return (.couriers, "id", "complaints")
         default: return nil
         }
     }

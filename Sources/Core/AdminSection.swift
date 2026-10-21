@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 26 разделов админки — в порядке меню сайта (admin/partials/layout.php).
+/// 28 разделов админки — в порядке меню сайта (admin/partials/layout.php).
 ///
 /// `rawValue` — ключ раздела сайта (`$adminSection`), он же используется в
 /// deep link `yumurta-admin://section/<rawValue>/<id>` и в уведомлениях.
@@ -12,6 +12,11 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
     // Переписка организаций с поддержкой площадки (как /admin/shop-support.php на сайте).
     // Ключ с дефисом — как у страницы сайта; в ссылке: yumurta-admin://section/shop-support/<shop_id>.
     case shopSupport = "shop-support"
+    // «Курьеры Yumurta» (как /admin/couriers.php на сайте, ручки /api/admin/pool/*):
+    // заявки курьеров с фото и правами, курьеры, проблемы с доставкой, жалобы.
+    // В ссылке: yumurta-admin://section/couriers/<user_id курьера>; вкладка — ?tab=problems|complaints,
+    // с id и вкладкой problems/complaints id — проблема или жалоба (её карточка, волна А92).
+    case couriers
     case reports, audit, staff, settings, database, parser
 
     var id: String { rawValue }
@@ -40,6 +45,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .campaigns: return "Рассылки"
         case .support: return "Поддержка"
         case .shopSupport: return "Сообщения продавцам"
+        case .couriers: return "Курьеры"
         case .reports: return "Отчёты"
         case .audit: return "Журнал"
         case .staff: return "Администраторы"
@@ -73,6 +79,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .campaigns: return "paperplane"
         case .support: return "headphones"
         case .shopSupport: return "bubble.left.and.bubble.right"
+        case .couriers: return "car"
         case .reports: return "chart.pie"
         case .audit: return "clock.arrow.circlepath"
         case .staff: return "checkmark.shield"
@@ -82,11 +89,12 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// Корневой экран раздела. AnyView — чтобы 26 веток не перегружали проверку типов.
+    /// Корневой экран раздела. AnyView — чтобы 28 веток не перегружали проверку типов.
     /// Экран НЕ содержит NavigationStack: его даёт вкладка или меню «Ещё».
     /// `subtab` — rawValue вкладки внутри раздела (NotifyCategory.subtab); сейчас его
-    /// понимают «Заявки магазинов» (registrations/publish/documents) и «Сообщения
-    /// продавцам» ("unread" — фильтр непрочитанных), остальные разделы
+    /// понимают «Заявки магазинов» (registrations/publish/documents), «Сообщения
+    /// продавцам» ("unread" — фильтр непрочитанных) и «Курьеры» (couriers/problems/
+    /// complaints), остальные разделы
     /// открываются на своей вкладке по умолчанию.
     func makeRoot(openId: Int? = nil, subtab: String? = nil) -> AnyView {
         switch self {
@@ -119,6 +127,8 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .support: return AnyView(SupportRootView(openId: openId))
         // openId — id организации (её чат открывается сразу), subtab "unread" — фильтр «Непрочитанные».
         case .shopSupport: return AnyView(ShopSupportRootView(openId: openId, subtab: subtab))
+        // openId — user_id курьера (его карточка открывается сразу), subtab — вкладка раздела.
+        case .couriers: return AnyView(CouriersRootView(openId: openId, subtab: subtab))
         case .reports: return AnyView(ReportsRootView(openId: openId))
         case .audit: return AnyView(AuditRootView(openId: openId))
         case .staff: return AnyView(StaffRootView(openId: openId))

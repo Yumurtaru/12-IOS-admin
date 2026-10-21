@@ -29,14 +29,33 @@ import UserNotifications
 /// | adReports        | inbox-counts (запасной: GET /api/admin/ads/reports) | counts.ad_reports / data.total (status=new)        |
 /// | shopSupport      | GET /api/admin/shop-support/unread               | data.threads (переписки с непрочитанным от продавцов);|
 /// |                  |                                                  | подпись — data.messages (сколько сообщений)           |
+/// | couriers         | inbox-counts (А92; запасной: GET /api/admin/pool/summary) | counts.pool_couriers_pending / data.pending |
+/// | courierProblems  | inbox-counts (А92; запасной: GET /api/admin/pool/summary) | counts.pool_problems_open / data.open_problems |
+/// | courierComplaints| inbox-counts (А92; запасной: GET /api/admin/pool/summary) | counts.pool_complaints_open / data.open_complaints |
 /// | cron             | GET /api/admin/dashboard?period=7                | data.cron.stale → 1, иначе 0                          |
+///
+/// «Курьеры Yumurta» (волна А92, ответ на П-45 №1): сервер отдаёт их счётчики в
+/// inbox-counts (pool_couriers_pending, pool_problems_open, pool_complaints_open — те же
+/// условия, что в /api/admin/pool/summary). Тогда сводку раздела раз в минуту НЕ опрашиваем.
+/// counts.total сервер считает без них, counts.total_all — с ними; бейдж — сумма включённых
+/// категорий (Notifier.total), поэтому курьерские счётчики входят в него ровно один раз —
+/// из inbox-counts или (старый сервер) из сводки, но никогда из обоих.
+/// Старый сервер (в inbox-counts этих полей нет) — как раньше, сводкой раздела. Сервер без
+/// раздела (404) или с выключенным разделом (503) — не ошибка опроса: счётчиков этих
+/// категорий нет (counts[c] == nil), и вкладка «Заявки» их строки не показывает
+/// (NotifyCategory.hiddenWithoutCount) — иначе они висели бы в «Пусто» и вели в 404.
+/// inbox-counts при отсутствии таблиц раздела отдаёт нули, поэтому, пока все три — 0,
+/// один раз за запуск проверяем сводкой, есть ли раздел (Notifier.poolAvailable).
 ///
 /// Чего нет и почему: «Выплаты» — выплаты создаёт сам админ (сразу «выплачено»),
 /// заявок от продавцов на сервере нет; «Товары» — у товаров нет статуса «на
 /// модерации» (только active/hidden). Поэтому этих категорий нет.
 enum NotifyCategory: String, CaseIterable, Identifiable {
     case registrations, publish, documents, shopTopups, onlinePayments, walletReconcile
-    case userTopups, returns, reviews, complaints, support, shopSupport, adReports, cron
+    case userTopups, returns, reviews, complaints, support, shopSupport, adReports
+    // «Курьеры Yumurta»: заявки на проверке, проблемы с доставкой, жалобы по вызовам.
+    case couriers, courierProblems, courierComplaints
+    case cron
 
     var id: String { rawValue }
 
@@ -56,6 +75,9 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case .support: return "Открытые обращения в поддержку"
         case .shopSupport: return "Сообщения продавцам"
         case .adReports: return "Жалобы на объявления"
+        case .couriers: return "Заявки курьеров"
+        case .courierProblems: return "Проблемы с доставкой курьеров"
+        case .courierComplaints: return "Жалобы по доставкам курьеров"
         case .cron: return "Фоновые задачи не запускаются"
         }
     }
@@ -76,6 +98,9 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case .support: return "Новое обращение в поддержку"
         case .shopSupport: return "Сообщение от организации"
         case .adReports: return "Жалоба на объявление"
+        case .couriers: return "Новая заявка курьера"
+        case .courierProblems: return "Проблема с доставкой"
+        case .courierComplaints: return "Жалоба по доставке курьера"
         case .cron: return "Крон не работает"
         }
     }
@@ -91,6 +116,7 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case .support: return .support
         case .shopSupport: return .shopSupport
         case .adReports: return .ads
+        case .couriers, .courierProblems, .courierComplaints: return .couriers
         case .cron: return .dashboard
         }
     }
@@ -106,7 +132,20 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case .userTopups: return "topups"
         // Раздел «Сообщения продавцам» откроется с фильтром «Непрочитанные».
         case .shopSupport: return "unread"
+        // Вкладки раздела «Курьеры» (CouriersTab); заявки — вкладка по умолчанию.
+        case .courierProblems: return "problems"
+        case .courierComplaints: return "complaints"
         default: return nil
+        }
+    }
+
+    /// Строку категории не показывать во вкладке «Заявки», пока у неё нет счётчика
+    /// (counts[c] == nil): раздела нет на сервере или он выключен. Только «Курьеры» —
+    /// у остальных категорий поведение прежнее.
+    var hiddenWithoutCount: Bool {
+        switch self {
+        case .couriers, .courierProblems, .courierComplaints: return true
+        default: return false
         }
     }
 
@@ -121,6 +160,9 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case .registrations, .publish, .documents, .shopTopups, .returns:
             return true
         case .complaints, .support, .shopSupport, .adReports:
+            return true
+        // pool_courier / pool_problem / pool_complaint (core/CourierPool.php → notifyAdminsEvent).
+        case .couriers, .courierProblems, .courierComplaints:
             return true
         case .onlinePayments, .walletReconcile, .userTopups, .reviews, .cron:
             return false
@@ -140,6 +182,9 @@ enum NotifyCategory: String, CaseIterable, Identifiable {
         case "shop_support": return .shopSupport
         case "ad_report": return .adReports
         case "moderation_backlog": return .reviews
+        case "pool_courier": return .couriers
+        case "pool_problem": return .courierProblems
+        case "pool_complaint": return .courierComplaints
         default: return nil
         }
     }
@@ -197,6 +242,11 @@ final class Notifier: ObservableObject {
     private let askedKey = "admin.notifier.permissionAsked"
     private var timer: Timer?
     private var lastAttempt: Date?
+    /// Есть ли на сервере раздел «Курьеры» (nil — ещё не знаем). Нужен, только когда
+    /// счётчики приходят из inbox-counts и все три — 0: нули сервер отдаёт и без таблиц
+    /// раздела, а строки «Курьеров» на таком сервере вели бы в 503. Один запрос сводки
+    /// за запуск; любой ненулевой счётчик — раздел точно есть.
+    private var poolAvailable: Bool?
 
     private init() {
         let raw = UserDefaults.standard.stringArray(forKey: disabledKey) ?? []
@@ -224,6 +274,11 @@ final class Notifier: ObservableObject {
 
     /// Значение категории (0, если ещё не получено).
     func count(_ c: NotifyCategory) -> Int { counts[c] ?? 0 }
+
+    /// Показывать ли строку категории во вкладке «Заявки» (см. hiddenWithoutCount).
+    func isListed(_ c: NotifyCategory) -> Bool {
+        !(c.hiddenWithoutCount && counts[c] == nil)
+    }
 
     // MARK: - Разрешение
 
@@ -292,6 +347,16 @@ final class Notifier: ObservableObject {
         let userTop = await userTopF
         let shopSup = await shopSupF
         let inboxCounts = Notifier.inboxCounts(inbox.json)
+        // «Курьеры Yumurta»: счётчики из inbox-counts (А92). Их там нет (старый сервер) —
+        // сводкой раздела, как раньше. Есть, но все нули и наличие раздела ещё не
+        // проверяли — тоже сводкой, один раз (см. poolAvailable).
+        let inboxPool = Notifier.poolCounts(inboxCounts)
+        let poolFromSummary = inboxPool == nil
+        let poolProbe = !poolFromSummary && poolAvailable == nil && !(inboxPool?.values.contains(where: { $0 > 0 }) ?? false)
+        var pool = Fetched(json: nil, error: nil)
+        if poolFromSummary || poolProbe {
+            pool = await Notifier.fetch("/api/admin/pool/summary", [:])
+        }
         // inbox-counts не ответил (старый сервер) — прежние запросы по спискам.
         var docs = Fetched(json: nil, error: nil)
         var rets = Fetched(json: nil, error: nil)
@@ -309,7 +374,9 @@ final class Notifier: ObservableObject {
         }
         guard Session.shared.isLoggedIn, !Task.isCancelled else { return }
         // Сколько запросов в опросе (все упали — показываем текст первой ошибки).
-        let sourceCount = inboxCounts == nil ? 8 : 5
+        // +1 — сводка курьеров, если счётчики берём из неё; её отсутствие на сервере
+        // (404/503) ошибкой не считаем. Разовая проверка раздела (poolProbe) не в счёт.
+        var sourceCount = (inboxCounts == nil ? 8 : 5) + (poolFromSummary ? 1 : 0)
 
         var next = counts
         var nextNotes = notes
@@ -359,6 +426,32 @@ final class Notifier: ObservableObject {
             let msgs = j["messages"].intValue
             nextNotes[.shopSupport] = msgs > 0 ? "Непрочитанных сообщений: " + String(msgs) : nil
         } else { fail("Сообщения продавцам", shopSup) }
+        if let pc = inboxPool {
+            // Счётчики из inbox-counts. Ненулевой — раздел точно есть; разовая проверка
+            // сводкой: ответила — есть, 404/503 — нет; сбой сети — спросим в следующий раз.
+            if pc.values.contains(where: { $0 > 0 }) {
+                poolAvailable = true
+            } else if poolProbe {
+                if pool.json != nil {
+                    poolAvailable = true
+                } else if Notifier.sectionMissing(pool.error) {
+                    poolAvailable = false
+                }
+            }
+            for c in [NotifyCategory.couriers, .courierProblems, .courierComplaints] {
+                next[c] = poolAvailable == false ? nil : pc[c]
+            }
+        } else if let j = pool.json {
+            next[.couriers] = j["pending"].intValue
+            next[.courierProblems] = j["open_problems"].intValue
+            next[.courierComplaints] = j["open_complaints"].intValue
+        } else if Notifier.sectionMissing(pool.error) {
+            // Раздела нет (старый сервер) или он выключен — строк «Курьеров» нет, это не сбой.
+            sourceCount -= 1
+            next[.couriers] = nil
+            next[.courierProblems] = nil
+            next[.courierComplaints] = nil
+        } else { fail("Курьеры", pool) }
 
         counts = next
         notes = nextNotes
@@ -382,6 +475,7 @@ final class Notifier: ObservableObject {
         lastUpdated = nil
         lastError = nil
         lastAttempt = nil
+        poolAvailable = nil
         UserDefaults.standard.removeObject(forKey: seenKey)
         UserDefaults.standard.removeObject(forKey: askedKey)
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
@@ -442,6 +536,22 @@ final class Notifier: ObservableObject {
             return nil
         }
         return c
+    }
+
+    /// Счётчики «Курьеров Yumurta» из counts ответа inbox-counts (волна А92); nil — старый
+    /// сервер без этих полей (тогда — сводка раздела). Только если пришли все три.
+    private static func poolCounts(_ c: JSON?) -> [NotifyCategory: Int]? {
+        guard let c = c,
+              let pending = c["pool_couriers_pending"].int,
+              let problems = c["pool_problems_open"].int,
+              let complaints = c["pool_complaints_open"].int else { return nil }
+        return [.couriers: max(0, pending), .courierProblems: max(0, problems), .courierComplaints: max(0, complaints)]
+    }
+
+    /// Ручки раздела нет (404) или раздел выключен на сервере (503 «временно недоступны»).
+    private static func sectionMissing(_ error: Error?) -> Bool {
+        guard let e = error as? APIError else { return false }
+        return e.status == 404 || e.status == 503
     }
 
     /// total из постраничного ответа {items,total,…}; без total — длина items/массива.
