@@ -13,6 +13,8 @@ enum CourierSheet: String, Identifiable {
 /// межгород и цена за км, самозанятость, согласие), фото лица и водительского
 /// удостоверения (с увеличением), деньги (долг, сальдо по заведениям, лимит наличных),
 /// последние доставки, проблемы и жалобы, история решений (журнал audit_log).
+/// Тап по доставке — «Кто видит заказ» (волна А96, CallVisibilityView; на старом сервере
+/// строка не нажимается).
 ///
 /// Решения — POST /api/admin/pool/couriers/{id}/approve|reject|block|unblock {note}
 /// (CourierPool::adminDecide): отказ и блокировка — только с причиной (курьер её увидит),
@@ -516,6 +518,7 @@ struct CourierBalanceRow: View {
 }
 
 /// Последние доставки, проблемы и жалобы на курьера (по 30 последних с сервера).
+/// Доставка открывает «Кто видит заказ» (волна А96), если ручка есть на сервере.
 struct CourierActivitySections: View {
     let c: JSON
 
@@ -525,7 +528,9 @@ struct CourierActivitySections: View {
         if !calls.isEmpty {
             Section("Последние доставки") {
                 ForEach(calls, id: \.stableID) { call in
-                    CourierCallRow(call: call)
+                    CallVisibilityRowLink(callId: call["id"].intValue) {
+                        CourierCallRow(call: call)
+                    }
                 }
             }
         }

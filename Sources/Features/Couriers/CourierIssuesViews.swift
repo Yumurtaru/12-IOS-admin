@@ -253,6 +253,8 @@ struct CourierProblemCard: View {
                     Label("Карточка курьера", systemImage: "person.text.rectangle")
                 }
             }
+            // Волна А96: какие курьеры видят этот вызов и почему (старый сервер — строки нет).
+            CallVisibilityLink(callId: problem["call_id"].intValue)
             if isOpen {
                 HStack(spacing: 10) {
                     Button {
@@ -527,5 +529,7 @@ struct CourierComplaintCard: View {
                 Label("Заведение: " + complaint["shop"].stringValue, systemImage: "building.2")
             }
         }
+        // Волна А96: какие курьеры видят этот вызов и почему (старый сервер — строки нет).
+        CallVisibilityLink(callId: complaint["call_id"].intValue)
     }
 }

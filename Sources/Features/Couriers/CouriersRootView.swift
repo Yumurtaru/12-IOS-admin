@@ -48,7 +48,12 @@ enum CouriersTab: String, CaseIterable, Identifiable, Hashable {
 /// `subtab` — "problems" / "complaints" (push pool_problem / pool_complaint); вместе с
 /// `openId` — id проблемы / жалобы: поверх вкладки сразу открывается её карточка
 /// (CourierIssueDetailView); нет такой (404) или сервер старый — остаётся вкладка.
-/// Вызовы и настройки раздела пока только на сайте.
+///
+/// «Кто видит заказ» (волна А96, GET /api/admin/pool/calls/{id}/visibility, CallVisibilityView):
+/// кнопка с глазом в шапке раздела (по номеру заказа), строка в карточках проблем и жалоб,
+/// тап по доставке в карточке курьера. Есть ли ручка, проверяется при входе в раздел
+/// (CallVisibilitySupport); на старом сервере входов нет.
+/// Список вызовов и настройки раздела пока только на сайте.
 struct CouriersRootView: View {
     let openId: Int?
 
@@ -62,6 +67,9 @@ struct CouriersRootView: View {
     @ObservedObject private var notifier = Notifier.shared
     @State private var deepLinkActive = false
     @State private var deepLinkHandled = false
+    /// Лист «Кто видит заказ» по номеру.
+    @State private var lookupShown = false
+    @ObservedObject private var visibility = CallVisibilitySupport.shared
     /// Вкладка записи из ссылки: .problems / .complaints — openId это id проблемы / жалобы;
     /// nil — openId это user_id курьера (как раньше).
     private let issueTab: CouriersTab?
@@ -90,6 +98,22 @@ struct CouriersRootView: View {
         }
         .safeAreaInset(edge: .top) { tabPicker }
         .navigationDestination(isPresented: $deepLinkActive) { deepLinkDestination }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                if visibility.showsEntry {
+                    Button {
+                        lookupShown = true
+                    } label: {
+                        Label("Кто видит заказ", systemImage: "eye")
+                    }
+                    .accessibilityLabel("Кто видит заказ")
+                    .accessibilityHint("Ввести номер заказа и посмотреть, каким курьерам он виден")
+                }
+            }
+        }
+        .sheet(isPresented: $lookupShown) {
+            CallVisibilityLookupSheet()
+        }
         .onAppear(perform: appeared)
     }
 
@@ -139,6 +163,8 @@ struct CouriersRootView: View {
         // На вкладке «Курьеры» сводку запросит сам список, когда загрузится (onReceive
         // lastMeta) — здесь не дублируем. Другие вкладки — сводка для чисел в сегментах.
         if tab != .couriers { Task { await summary.loadIfNeeded() } }
+        // Есть ли на сервере «Кто видит заказ» (А96) — один раз за запуск.
+        Task { await CallVisibilitySupport.shared.probeIfNeeded() }
         if openId != nil && !deepLinkHandled {
             deepLinkHandled = true
             deepLinkActive = true
