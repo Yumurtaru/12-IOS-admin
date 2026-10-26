@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Вкладка «Ещё»: все 28 разделов в порядке меню сайта + «Настройки приложения».
+/// Вкладка «Ещё»: все 29 разделов в порядке меню сайта + «Настройки приложения».
 struct MoreView: View {
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var notifier: Notifier

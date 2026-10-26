@@ -63,7 +63,8 @@ definitions:
 
     # Версию пишем ПОСЛЕ XcodeGen прямо в готовый Info.plist: XcodeGen
     # подставляет своё умолчание 1.0, а PlistBuddy от него не зависит.
-    # Номер сборки — BUILD_NUMBER Codemagic: TestFlight требует, чтобы внутри
+    # Номер сборки — наибольшее из счётчика Codemagic (BUILD_NUMBER) и последней
+    # сборки у Apple (TestFlight / App Store) + 1: TestFlight требует, чтобы внутри
     # одной версии номера сборок не повторялись.
     - &version
       name: Версия и номер сборки
@@ -78,10 +79,62 @@ definitions:
           exit 1
         fi
         [ -f "$APP_PLIST" ] || { echo "ОШИБКА: нет файла $APP_PLIST"; exit 1; }
+        # App Store ID ищем по bundle id (как шаг «Карточка приложения»): нет
+        # ключей или карточки — номера берутся как раньше, сборка не падает.
+        APP_ID_LOOKUP=""
+        if AJ_AV=$(app-store-connect apps list --bundle-id-identifier "ru.marketplace.admin" --strict-match-identifier --json 2>/dev/null); then
+          APP_ID_LOOKUP=$(printf '%s' "$AJ_AV" | python3 -c "import json,sys; d=json.load(sys.stdin); d=d.get('data',d) if isinstance(d,dict) else d; d=[d] if isinstance(d,dict) else (d or []); print(d[0]['id'] if d else '')" 2>/dev/null || true)
+        fi
+        # АВТОМАТИЧЕСКИЙ НОМЕР ВЕРСИИ (26.10.2026, просьба владельца: не останавливать
+        # сборку из-за занятого номера). Если номер из project.yml в App Store уже
+        # закрыт (выпущен/одобрен) или ниже выпущенного — берём следующий после
+        # последнего закрытого (1.0.7 → 1.0.8, 1.3 → 1.4) и передаём его следующим
+        # шагам через $CM_ENV (APP_VERSION). Не получилось спросить Apple — номер
+        # остаётся из project.yml, сборку не роняем.
+        APP_ID_AV="$APP_ID_LOOKUP"
+        if OUT_AV=$(app-store-connect apps app-store-versions "$APP_ID_AV" --platform IOS --json 2>/tmp/asc_av_err.txt); then
+          printf '%s' "$OUT_AV" > /tmp/asc_av.json
+          NEWV=$(V="$VERSION" python3 -c "import json,os;d=json.load(open('/tmp/asc_av.json'));d=d.get('data',d) if isinstance(d,dict) else d;d=[d] if isinstance(d,dict) else (d or []);a=[i.get('attributes') or {} for i in d if isinstance(i,dict)];closed={'READY_FOR_SALE','READY_FOR_DISTRIBUTION','APPROVED','ACCEPTED','PENDING_DEVELOPER_RELEASE','PENDING_APPLE_RELEASE','PROCESSING_FOR_APP_STORE','PROCESSING_FOR_DISTRIBUTION','REPLACED_WITH_NEW_VERSION'};ok=lambda s:bool(s) and all(p.isdigit() for p in s.split('.'));t=lambda s:tuple(int(p) for p in s.split('.'));cl=[t(x['versionString']) for x in a if ok(x.get('versionString') or '') and ({x.get('appStoreState'),x.get('appVersionState'),x.get('state')} & closed)];v=os.environ['V'];top=max(cl) if cl else None;print(v if (not ok(v) or top is None or t(v)>top) else '.'.join(str(n) for n in top[:-1]+(top[-1]+1,)))" 2>/tmp/asc_av_perr.txt || true)
+          if [ -n "$NEWV" ] && [ "$NEWV" != "$VERSION" ]; then
+            echo "─────────────────────────────────────────"
+            echo "  Номер $VERSION в App Store уже закрыт — беру следующий свободный: $NEWV"
+            echo "  (в project.yml его можно поднять потом, сборку это не останавливает)"
+            echo "─────────────────────────────────────────"
+            VERSION="$NEWV"
+          elif [ -z "$NEWV" ]; then
+            echo "Не разобрал список версий App Store — номер из project.yml: $VERSION. $(head -c 200 /tmp/asc_av_perr.txt | tr '\n' ' ')"
+          fi
+        else
+          echo "App Store Connect не ответил — номер из project.yml: $VERSION. $(head -c 200 /tmp/asc_av_err.txt | tr '\n' ' ')"
+        fi
+        if [ -n "${CM_ENV:-}" ]; then echo "APP_VERSION=$VERSION" >> "$CM_ENV"; fi
+        # НОМЕР СБОРКИ: больше уже загруженного в App Store Connect. Счётчик Codemagic
+        # свой у каждого приложения Codemagic (после переноса в новый репозиторий он
+        # начинается с 1 — Apple отвечает 409 «bundle version must be higher»).
+        # Берём наибольшее из счётчика и последней сборки у Apple + 1.
+        NUM="${BUILD_NUMBER:-1}"
+        case "$NUM" in ''|*[!0-9]*) NUM=1;; esac
+        LAST=0
+        for ARGS in "--all-versions" "" ; do
+          if OUT_BN=$(app-store-connect get-latest-testflight-build-number "$APP_ID_AV" $ARGS 2>/tmp/asc_bn_err.txt); then
+            N=$(printf '%s' "$OUT_BN" | grep -Eo '[0-9]+' | tail -1 || true)
+            if [ -n "$N" ] && [ "$N" -gt "$LAST" ]; then LAST=$N; fi
+            break
+          fi
+          echo "TestFlight: номер не получил ($ARGS) — $(head -c 200 /tmp/asc_bn_err.txt | tr '\n' ' ')"
+        done
+        if OUT_BN=$(app-store-connect get-latest-app-store-build-number "$APP_ID_AV" 2>/tmp/asc_bn_err.txt); then
+          N=$(printf '%s' "$OUT_BN" | grep -Eo '[0-9]+' | tail -1 || true)
+          if [ -n "$N" ] && [ "$N" -gt "$LAST" ]; then LAST=$N; fi
+        else
+          echo "App Store: номер не получил — $(head -c 200 /tmp/asc_bn_err.txt | tr '\n' ' ')"
+        fi
+        if [ "$LAST" -ge "$NUM" ]; then NUM=$((LAST + 1)); fi
+        echo "Счётчик Codemagic: ${BUILD_NUMBER:-нет}; последняя сборка у Apple: $LAST; номер сборки: $NUM"
         /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PLIST" \
           || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$APP_PLIST"
-        /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER:-1}" "$APP_PLIST" \
-          || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${BUILD_NUMBER:-1}" "$APP_PLIST"
+        /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NUM" "$APP_PLIST" \
+          || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $NUM" "$APP_PLIST"
         A_V=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PLIST")
         A_B=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
         echo "─────────────────────────────────────────"

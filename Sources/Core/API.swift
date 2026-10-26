@@ -131,6 +131,11 @@ final class API {
     /// refresh_token приходят cookie и должны переживать запросы.
     let session: URLSession
 
+    /// Сессия для долгих запросов (`timeout:` у request/post): тот же cookie-склад,
+    /// но ожидание ответа до 200 с — например, розыгрыш, где сервер синхронно шлёт
+    /// push победителям (set_time_limit 180). Обычные запросы её не используют.
+    let slowSession: URLSession
+
     private let refresher = TokenRefresher()
 
     private init() {
@@ -142,6 +147,15 @@ final class API {
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.urlCache = nil
         session = URLSession(configuration: cfg)
+        let slow = URLSessionConfiguration.default
+        slow.timeoutIntervalForRequest = 200
+        slow.timeoutIntervalForResource = 300
+        slow.httpCookieStorage = HTTPCookieStorage.shared
+        slow.httpCookieAcceptPolicy = .always
+        slow.httpShouldSetCookies = true
+        slow.requestCachePolicy = .reloadIgnoringLocalCacheData
+        slow.urlCache = nil
+        slowSession = URLSession(configuration: slow)
     }
 
     // MARK: - Короткие методы (возвращают data)
@@ -156,10 +170,12 @@ final class API {
         try await request("GET", path, query: query)
     }
 
-    /// POST с JSON-телом → поле data.
+    /// POST с JSON-телом → поле data. `timeout` — ожидание ответа в секундах для
+    /// долгих ручек (nil — обычные 30 с); с ним запрос идёт через `slowSession`.
     @discardableResult
-    func post(_ path: String, body: [String: Any?] = [:], query: [String: String?] = [:]) async throws -> JSON {
-        try await request("POST", path, query: query, body: body).data
+    func post(_ path: String, body: [String: Any?] = [:], query: [String: String?] = [:],
+              timeout: TimeInterval? = nil) async throws -> JSON {
+        try await request("POST", path, query: query, body: body, timeout: timeout).data
     }
 
     /// PUT с JSON-телом → поле data.
@@ -188,19 +204,23 @@ final class API {
 
     /// Любой запрос. `auth: false` — без токена и без попытки обновить его (вход).
     /// `headers` — дополнительные заголовки (ключ повтора и т.п.).
+    /// `timeout` — ожидание ответа в секундах для долгих ручек (nil — обычные 30 с):
+    /// запрос идёт через `slowSession` и со своим timeoutInterval.
     func request(_ method: String, _ path: String, query: [String: String?] = [:],
                  body: [String: Any?]? = nil, auth: Bool = true,
-                 headers: [String: String] = [:]) async throws -> APIResult {
+                 headers: [String: String] = [:], timeout: TimeInterval? = nil) async throws -> APIResult {
         let bodyData: Data? = try body.map { try JSONBody.data($0) }
         let build: () throws -> URLRequest = {
             var req = try self.makeRequest(method, path, query: query, auth: auth, contentType: bodyData == nil ? nil : "application/json")
             for (name, value) in headers { req.setValue(value, forHTTPHeaderField: name) }
+            if let t = timeout { req.timeoutInterval = t }
             return req
         }
+        let urlSession = timeout == nil ? session : slowSession
         return try await perform(auth: auth) {
             var req = try build()
             req.httpBody = bodyData
-            return try await self.session.data(for: req)
+            return try await urlSession.data(for: req)
         }
     }
 
