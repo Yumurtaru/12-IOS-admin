@@ -208,7 +208,10 @@ struct ShopSupportBroadcastView: View {
         Task { @MainActor in
             do {
                 let payload: [String: Any?] = ["body": body, "all": all, "shop_ids": ids, "confirm_count": n]
-                let d = try await API.shared.post("/api/admin/shop-support/broadcast", body: payload)
+                // До 310 с: сервер шлёт до 5000 адресатам синхронно (set_time_limit 300).
+                // Дублей при повторе нет (метка рассылки + GET_LOCK — повтор получит 409).
+                let d = try await API.shared.post("/api/admin/shop-support/broadcast", body: payload,
+                                                  timeout: 310)
                 busy = false
                 Haptics.success()
                 resultText = ShopSupportBroadcastView.describe(d)
@@ -223,7 +226,14 @@ struct ShopSupportBroadcastView: View {
                 }
                 busy = false
                 Haptics.error()
-                self.error = APIError.describe(error)
+                let e = API.mapTransport(error)
+                if MoneyOp.isUnknown(e) {
+                    // Ответ не дошёл, а сервер мог дослать рассылку. Повтор безопасен:
+                    // кто уже получил, второй раз не получит («Уже получили раньше»).
+                    self.error = e.message + "\nРассылка могла пройти — проверьте чаты организаций. Повторная отправка дублей не даст."
+                } else {
+                    self.error = e.message
+                }
             }
         }
     }

@@ -94,6 +94,13 @@ struct WalletsUserTopupsView: View {
 }
 
 /// Пополнение кошелька клиента: данные + «Проверить» / «Закрыть» для ожидающих.
+///
+/// У заявки с платежом (payment_id) «Закрыть» сначала предлагает проверить платёж в
+/// ЮKassa (POST …/recheck — сервер спросит ЮKassa и зачислит оплаченное). Закрытую, но
+/// оплаченную заявку Wallet::creditTopup зачислит только по уведомлению ЮKassa или
+/// «Проверить» (Wallet.php: «оплачена отменённая заявка — зачисляем»), а уведомление как
+/// раз не дошло: человек увидит «не оплачено» и может заплатить второй раз.
+/// Закрыть без проверки можно — после предупреждения.
 struct WalletsUserTopupRow: View {
     let item: JSON
     let clientName: String
@@ -103,6 +110,15 @@ struct WalletsUserTopupRow: View {
     let onOpenWallet: (() -> Void)?
 
     @State private var askClose = false
+    /// Предупреждение перед «Закрыть» у заявки с платежом, ещё не проверенной в ЮKassa.
+    @State private var askCheckFirst = false
+    /// Идёт проверка из предупреждения.
+    @State private var checkingBeforeClose = false
+    /// В этом окне проверка уже была: ЮKassa оплату не подтвердила (заявка осталась pending).
+    @State private var checkedNotPaid = false
+    /// Что сказала ЮKassa при последней проверке (строка recheck: yookassa_status /
+    /// yookassa_unavailable); nil — сервер этих полей не прислал.
+    @State private var lastYooLine: String?
 
     init(item: JSON, clientName: String, showClient: Bool, onNotice: @escaping (String) -> Void,
          onDone: @escaping () async -> Void, onOpenWallet: (() -> Void)? = nil) {
@@ -162,6 +178,60 @@ struct WalletsUserTopupRow: View {
         .sheet(isPresented: $askClose) {
             closeSheet
         }
+        .confirmationDialog("Платёж мог пройти", isPresented: $askCheckFirst, titleVisibility: .visible) {
+            Button("Проверить в ЮKassa") { checkThenClose() }
+            Button("Закрыть без проверки", role: .destructive) { askClose = true }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Сначала нажмите «Проверить в ЮKassa»: если человек оплатил, а уведомление не дошло, сервер зачислит деньги. Закрытую оплаченную заявку сервер зачислит, только если уведомление ЮKassa всё-таки придёт или нажать «Проверить», — а до тех пор клиент видит «не оплачено» и может заплатить ещё раз.")
+        }
+    }
+
+    /// «Закрыть»: у заявки с платежом, не проверенной в ЮKassa, — сначала предупреждение.
+    private func closeTapped() {
+        if !paymentId.isEmpty && !checkedNotPaid {
+            Haptics.warning()
+            askCheckFirst = true
+        } else {
+            askClose = true
+        }
+    }
+
+    /// Проверить в ЮKassa; оплата не подтверждена — открыть закрытие, оплачен — сообщить о зачислении.
+    private func checkThenClose() {
+        guard !checkingBeforeClose else { return }
+        checkingBeforeClose = true
+        Task { @MainActor in
+            defer { checkingBeforeClose = false }
+            let id = item.id ?? 0
+            do {
+                let r = try await API.shared.post("/api/admin/user-topups/\(id)/recheck")
+                let st = r["status"].stringValue
+                let yoo = r["yookassa_status"].string
+                lastYooLine = TopupReject.recheckLine(r)
+                if st == "confirmed" {
+                    onNotice("Платёж прошёл, зачислено. Баланс клиента: " + Fmt.money(r["balance"]))
+                    await onDone()
+                } else if st == "pending" && (yoo == "succeeded" || yoo == "waiting_for_capture") {
+                    // Деньги у ЮKassa есть, а заявка не зачислилась — закрывать нельзя.
+                    onNotice(WalletsUserTopupRow.pendingText(r))
+                    await onDone()
+                } else if st == "pending" && r["yookassa_unavailable"].bool == true {
+                    onNotice(WalletsUserTopupRow.pendingText(r) + " Закрывать заявку без проверки не стоит — платёж мог пройти.")
+                } else if st == "pending" {
+                    checkedNotPaid = true
+                    askClose = true
+                } else {
+                    // rejected / иное: заявка уже не ожидает — показать и обновить список.
+                    onNotice("Заявка уже не ожидает оплаты: " + WalletsLabels.userTopupStatus(st) + ".")
+                    await onDone()
+                }
+            } catch {
+                if !APIError.isCancellation(error) {
+                    onNotice("Проверить в ЮKassa не удалось: " + APIError.describe(error) + ". Закрывать заявку без проверки не стоит — платёж мог пройти.")
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -175,11 +245,16 @@ struct WalletsUserTopupRow: View {
                         }
                     }
                     Button(role: .destructive) {
-                        askClose = true
+                        closeTapped()
                     } label: {
-                        Label("Закрыть", systemImage: "xmark")
+                        if checkingBeforeClose {
+                            ProgressView()
+                        } else {
+                            Label("Закрыть", systemImage: "xmark")
+                        }
                     }
                     .buttonStyle(.bordered)
+                    .disabled(checkingBeforeClose)
                 }
                 if let open = onOpenWallet {
                     Button {
@@ -197,12 +272,41 @@ struct WalletsUserTopupRow: View {
         let id = item.id ?? 0
         let r = try await API.shared.post("/api/admin/user-topups/\(id)/recheck")
         let st = r["status"].stringValue
+        lastYooLine = TopupReject.recheckLine(r)
         if st == "confirmed" {
             onNotice("Платёж прошёл, зачислено. Баланс клиента: " + Fmt.money(r["balance"]))
         } else {
-            onNotice("ЮKassa: платёж пока не оплачен (" + WalletsLabels.userTopupStatus(st) + ")")
+            if st == "pending" {
+                let yoo = r["yookassa_status"].string
+                let blocked = yoo == "succeeded" || yoo == "waiting_for_capture" || r["yookassa_unavailable"].bool == true
+                checkedNotPaid = !blocked
+                onNotice(WalletsUserTopupRow.pendingText(r))
+            } else {
+                onNotice("Заявка уже не ожидает оплаты: " + WalletsLabels.userTopupStatus(st) + ".")
+            }
         }
         await onDone()
+    }
+
+    /// Заявка осталась «в ожидании» после recheck — что честно сказать по статусу ЮKassa.
+    static func pendingText(_ r: JSON) -> String {
+        if r["yookassa_unavailable"].bool == true {
+            return "ЮKassa не ответила — статус платежа неизвестен. Повторите проверку позже."
+        }
+        switch r["yookassa_status"].string ?? "" {
+        case "succeeded":
+            return "Платёж в ЮKassa оплачен, но не зачислен (сумма или валюта не совпали с заявкой). Закрывать нельзя — разберите его в «Продавцы» → «Зависшие онлайн-пополнения»."
+        case "waiting_for_capture":
+            return "Платёж в ЮKassa ждёт списания — деньги у клиента заблокированы. Закрывать нельзя: подтвердите или отмените платёж в кабинете ЮKassa."
+        case "pending":
+            return "Статус в ЮKassa: ожидает оплаты — клиент ещё не заплатил."
+        case "canceled":
+            return "Статус в ЮKassa: отменён — оплаты не было, заявку можно закрыть."
+        case "":
+            return "ЮKassa не подтвердила оплату (платёж может быть в процессе или ЮKassa недоступна)."
+        case let other:
+            return "Статус в ЮKassa: " + WalletsLabels.yooStatus(other) + ". Оплата не подтверждена."
+        }
     }
 
     private var closeSheet: some View {
@@ -212,13 +316,22 @@ struct WalletsUserTopupRow: View {
         let num = String(item.id ?? 0)
         let sum = Fmt.money(item["amount"])
         let head = "Пополнение №" + num + " · " + sum
-        let msg = head + " · " + who + ". Закрыть как неоплаченное — деньги не зачисляются."
-        return TextInputSheet(title: "Закрыть заявку", message: msg, placeholder: "Закрыто администратором",
-                              multiline: true, submitTitle: "Закрыть как неоплаченную", minLength: 0,
-                              destructive: true) { text in
+        var msg = head + " · " + who + ". Закрыть как неоплаченное — деньги не зачисляются."
+        if !paymentId.isEmpty {
+            if checkedNotPaid {
+                msg += " Только что проверили: " + (lastYooLine ?? "ЮKassa не подтвердила оплату (платёж может быть в процессе или ЮKassa недоступна).")
+            } else {
+                msg += " Платёж в ЮKassa не проверен — если он прошёл, клиент увидит «не оплачено» и может заплатить ещё раз."
+            }
+        }
+        // Сервер сам спрашивает ЮKassa (П-62, А316): «оплачен» — 409, «не ответила» — 502
+        // need=force → «Отклонить без проверки?» — это разбирает TopupRejectSheet.
+        return TopupRejectSheet(title: "Закрыть заявку", message: msg, placeholder: "Закрыто администратором",
+                                submitTitle: "Закрыть как неоплаченную") { reason, force in
             let id = item.id ?? 0
-            let reason = text.isEmpty ? "Закрыто администратором" : text
-            try await API.shared.post("/api/admin/user-topups/\(id)/reject", body: ["reason": reason])
+            var body: [String: Any?] = ["reason": reason]
+            if force { body["force"] = true }
+            try await API.shared.post("/api/admin/user-topups/\(id)/reject", body: body)
             onNotice("Заявка закрыта")
             await onDone()
         }

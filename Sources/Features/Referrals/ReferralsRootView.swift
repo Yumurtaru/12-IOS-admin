@@ -4,8 +4,9 @@ import SwiftUI
 /// (как /admin/referrals сайта).
 ///
 ///  * GET  /api/admin/referral-debt[?shop_id=] — сводка, магазины, строки и отметки магазина;
-///  * POST /api/admin/referral-debt/settle {shop_id} — отметить долг возмещённым
-///    (деньги не двигаются — только отметка в реестре);
+///  * POST /api/admin/referral-debt/settle {shop_id, max_id} — отметить долг возмещённым
+///    (деньги не двигаются — только отметка в реестре). `max_id` — граница из строки
+///    магазина (П-62, А316): отмечается ровно та сумма, что на экране;
 ///  * POST /api/admin/referral-debt/unsettle {shop_id, settled_at} — снять отметку.
 ///
 /// `openId` — id магазина: сразу открывается его карточка долга.
@@ -124,7 +125,8 @@ struct ReferralsRootView: View {
 
     private func settle() async throws {
         guard let x = settleShop else { return }
-        let text = try await ReferralsSettle.run(shopId: x["shop_id"].intValue, shown: x["debt"].decimal)
+        let text = try await ReferralsSettle.run(shopId: x["shop_id"].intValue, shown: x["debt"].decimal,
+                                                 maxId: x["max_id"].int)
         notice = text
         await loader.load()
     }
@@ -138,14 +140,27 @@ enum ReferralsSettle {
                       confirmLabel: "Отметить возмещённым")
     }
 
-    /// POST settle; возвращает текст итога. Если сервер отметил другую сумму (за это
-    /// время клиент потратил ещё баллы) — говорит об этом.
-    static func run(shopId: Int, shown: Decimal?) async throws -> String {
-        let r = try await API.shared.post("/api/admin/referral-debt/settle", body: ["shop_id": shopId])
+    /// POST settle; возвращает текст итога. `maxId` — граница из строки магазина
+    /// (`max_id`, А316): сервер отметит не больше неё — ровно ту сумму, что на экране.
+    /// Нет границы (старый сервер) — как раньше, всё незакрытое. Если сервер отметил
+    /// другую сумму — говорит об этом.
+    static func run(shopId: Int, shown: Decimal?, maxId: Int?) async throws -> String {
+        var body: [String: Any?] = ["shop_id": shopId]
+        if let m = maxId, m > 0 { body["max_id"] = m }
+        let r = try await API.shared.post("/api/admin/referral-debt/settle", body: body)
         let settled = r["settled"].decimal
         var text = "Отмечено возмещённым: " + Fmt.money(settled)
         if let s = settled, let w = shown, s != w {
-            text += " (на экране было " + Fmt.money(w) + " — за это время добавились записи)"
+            let was = Fmt.money(w)
+            if s < w {
+                // С границей max_id больше видимого сервер не отметит: меньше — часть записей
+                // за это время отметили (или сняли) в другом окне.
+                text += " — меньше, чем было на экране (" + was + "): часть записей уже отметили раньше."
+            } else {
+                // Больше видимого — только старый сервер без границы max_id: за это время
+                // добавились записи, и отметились и они.
+                text += " — больше, чем было на экране (" + was + "): за это время добавились записи, отмечены и они."
+            }
         }
         return text
     }
@@ -298,7 +313,8 @@ struct ReferralsShopView: View {
                 ActionButton("Отметить " + Fmt.money(debt) + " возмещёнными", systemImage: "checkmark.seal",
                              style: .prominent, confirm: ReferralsSettle.confirm(shop: name, debt: debt),
                              fullWidth: true) {
-                    let text = try await ReferralsSettle.run(shopId: shopId, shown: debt)
+                    let text = try await ReferralsSettle.run(shopId: shopId, shown: debt,
+                                                             maxId: summary["max_id"].int)
                     notice = text
                     await changed()
                 }

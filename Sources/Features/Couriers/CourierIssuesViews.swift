@@ -254,7 +254,8 @@ struct CourierProblemCard: View {
                 }
             }
             // Волна А96: какие курьеры видят этот вызов и почему (старый сервер — строки нет).
-            CallVisibilityLink(callId: problem["call_id"].intValue)
+            CallVisibilityLink(callId: problem["call_id"].intValue,
+                               title: "Доставка №" + problem["call_id"].stringValue)
             if isOpen {
                 HStack(spacing: 10) {
                     Button {
@@ -530,6 +531,8 @@ struct CourierComplaintCard: View {
             }
         }
         // Волна А96: какие курьеры видят этот вызов и почему (старый сервер — строки нет).
-        CallVisibilityLink(callId: complaint["call_id"].intValue)
+        // То же название, что в строке вызова выше (call_title «Заказ №57» / «Вызов №…»).
+        CallVisibilityLink(callId: complaint["call_id"].intValue,
+                           title: complaint["call_title"].nonEmptyString ?? ("Вызов №" + complaint["call_id"].stringValue))
     }
 }

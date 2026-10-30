@@ -69,12 +69,18 @@ enum AdminPush {
     }
 
     /// Отправить токен на сервер — ТОЛЬКО если сервер знает платформу ios_admin.
-    /// POST /api/v1/push/register {token, platform: "ios_admin"}.
+    /// POST /api/v1/push/register {token, platform: "ios_admin", app_version?, app_build?,
+    /// device_id?, device_model?, os_version?} — поля установки (волна А105,
+    /// AppInstalls::fromPush) как у других приложений: без них приложение администратора
+    /// в «Приложениях» сайта видно без версии и модели. Старый сервер их игнорирует.
     @MainActor
     static func registerIfPossible() async {
         guard serverSupportsAdminPlatform else { return }
         guard Session.shared.isLoggedIn, let token = deviceToken else { return }
-        let body: [String: Any?] = ["token": token, "platform": platform]
+        var body: [String: Any?] = ["token": token, "platform": platform]
+        // Новый id установки — только когда файлы телефона открыты (после первой разблокировки).
+        let extra = InstallInfo.pushFields(canCreate: UIApplication.shared.isProtectedDataAvailable)
+        for (k, v) in extra { body[k] = v }
         // Ответ: {registered: bool, reassigned: bool} (routes/api_v1.php). Ошибка сети —
         // прежнее значение не трогаем: при следующем запуске регистрация повторится.
         guard let d = try? await API.shared.post("/api/v1/push/register", body: body) else { return }

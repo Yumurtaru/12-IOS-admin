@@ -132,8 +132,9 @@ final class API {
     let session: URLSession
 
     /// Сессия для долгих запросов (`timeout:` у request/post): тот же cookie-склад,
-    /// но ожидание ответа до 200 с — например, розыгрыш, где сервер синхронно шлёт
-    /// push победителям (set_time_limit 180). Обычные запросы её не используют.
+    /// но ожидание ответа до `timeout` запроса (200–660 с) — розыгрыш (сервер синхронно
+    /// шлёт push победителям), денежные формы, рассылки, удаление организации (до 11 мин).
+    /// Обычные запросы её не используют.
     let slowSession: URLSession
 
     private let refresher = TokenRefresher()
@@ -148,8 +149,12 @@ final class API {
         cfg.urlCache = nil
         session = URLSession(configuration: cfg)
         let slow = URLSessionConfiguration.default
-        slow.timeoutIntervalForRequest = 200
-        slow.timeoutIntervalForResource = 300
+        // Потолок сессии — 680 с, а ожидание ответа задаёт `timeout` самого запроса
+        // (розыгрыш и деньги — 200 с, рассылка организациям — 310 с: сервер
+        // set_time_limit 300; удаление организации — 660 с: сервер доводит его до
+        // 10 мин). Весь запрос — до 12 мин.
+        slow.timeoutIntervalForRequest = 680
+        slow.timeoutIntervalForResource = 720
         slow.httpCookieStorage = HTTPCookieStorage.shared
         slow.httpCookieAcceptPolicy = .always
         slow.httpShouldSetCookies = true
@@ -198,6 +203,17 @@ final class API {
     @discardableResult
     func postIdempotent(_ path: String, body: [String: Any?], key: String) async throws -> APIResult {
         try await request("POST", path, body: body, headers: ["Idempotency-Key": key])
+    }
+
+    /// POST с заголовком `Idempotency-Key` и (по желанию) долгим ожиданием ответа.
+    /// Денежные ручки админки (shops/{id}/topup, user-wallets/{id}/correct, payouts,
+    /// pool/couriers/{id}/adjust) принимают ключ с П-62 (А316): повтор с тем же ключом и
+    /// тем же телом отдаёт сохранённый ответ (24 ч), операция второй раз не проводится.
+    /// Ключ и повтор держит форма (MoneyOpGuard).
+    @discardableResult
+    func postKeyed(_ path: String, body: [String: Any?], key: String,
+                   timeout: TimeInterval? = nil) async throws -> APIResult {
+        try await request("POST", path, body: body, headers: ["Idempotency-Key": key], timeout: timeout)
     }
 
     // MARK: - Общий запрос

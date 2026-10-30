@@ -202,8 +202,9 @@ struct CourierDetailView: View {
                 try await saveCashLimit(text)
             }
         case .adjust:
-            CourierAdjustSheet(courierName: c["full_name"].stringValue, balances: c["balances"].array) { body in
-                let res = try await API.shared.post(base + "/adjust", body: body)
+            CourierAdjustSheet(courierId: id, courierName: c["full_name"].stringValue,
+                               balances: c["balances"].array) { res in
+                // Ответ ручки — карточка курьера; .null — перечитать (исход был неизвестен).
                 await applied(res)
             }
         }
@@ -1003,27 +1004,40 @@ struct CourierShopOption: Identifiable, Hashable {
 /// Поправка расчёта: POST /api/admin/pool/couriers/{id}/adjust
 /// {kind: adjustment|platform_paid, shop_id, amount (со знаком: + курьер должен больше), note}.
 /// «Комиссия получена» (platform_paid) — сервер сам пишет минус по площадке (shop_id 0).
+///
+/// /adjust принимает Idempotency-Key (П-62, А316; adminRepeatGuard у него нет, а до А316 —
+/// никакой защиты). Форма (MoneyOpGuard): ожидание до 200 с, при неизвестном исходе —
+/// «Проверить» по журналу действий (GET /api/admin/audit?entity=pool_courier&action=adjust);
+/// «Провести ещё раз» — только если поправки нет, с подтверждением, тем же ключом и телом.
 struct CourierAdjustSheet: View {
+    let courierId: Int
     let courierName: String
     let shops: [CourierShopOption]
-    let onSubmit: ([String: Any?]) async throws -> Void
+    /// Поправка записана: ответ сервера (карточка курьера) или .null — перечитать карточку.
+    let onApplied: (JSON) async -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var op: MoneyOpGuard
     @State private var kind = "adjustment"
     @State private var shopChoice: Int
     @State private var otherShop = ""
     @State private var direction = 1
     @State private var amount = ""
     @State private var note = ""
-    @State private var busy = false
     @State private var error: String?
     @State private var askConfirm = false
+    @State private var foundText: String?
+    /// Что ушло на сервер: заведение и сумма со знаком (как запишет сервер).
+    @State private var sentShop: Int?
+    @State private var sentAmount: Decimal?
 
     /// - Parameters:
+    ///   - courierId: user_id курьера;
     ///   - courierName: имя курьера (для подтверждения);
     ///   - balances: сальдо из карточки (заведения для выбора);
-    ///   - onSubmit: отправка тела запроса.
-    init(courierName: String, balances: [JSON], onSubmit: @escaping ([String: Any?]) async throws -> Void) {
+    ///   - onApplied: поправка записана (или могла записаться) — обновить карточку.
+    init(courierId: Int, courierName: String, balances: [JSON], onApplied: @escaping (JSON) async -> Void) {
+        self.courierId = courierId
         self.courierName = courierName
         var list: [CourierShopOption] = []
         for b in balances {
@@ -1032,8 +1046,17 @@ struct CourierAdjustSheet: View {
         }
         list.append(CourierShopOption(id: 0, name: "Площадка (комиссия)"))
         self.shops = list
-        self.onSubmit = onSubmit
+        self.onApplied = onApplied
         _shopChoice = State(initialValue: list.first?.id ?? 0)
+        let uid = courierId
+        _op = StateObject(wrappedValue: MoneyOpGuard(history: { page in
+            let d = try await API.shared.get("/api/admin/audit", query: [
+                "entity": "pool_courier", "action": "adjust", "q": String(uid), "page": String(page),
+            ])
+            let all = MoneyOpPage.paged(d, page: page)
+            // id отметки и границы страниц — по всем строкам; совпадение ищем только у этого курьера.
+            return MoneyOpPage(rows: all.rows, more: all.more)
+        }))
     }
 
     private var amountValue: Decimal? {
@@ -1050,7 +1073,7 @@ struct CourierAdjustSheet: View {
     }
 
     private var noteText: String { note.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var canSubmit: Bool { !busy && amountValue != nil && shopId != nil && !noteText.isEmpty }
+    private var canSubmit: Bool { !op.locked && amountValue != nil && shopId != nil && !noteText.isEmpty }
 
     private var shopName: String {
         guard let sid = shopId else { return "—" }
@@ -1070,42 +1093,49 @@ struct CourierAdjustSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Picker("Что записать", selection: $kind) {
-                        Text("Поправка").tag("adjustment")
-                        Text("Комиссия получена").tag("platform_paid")
+                Group {
+                    Section {
+                        Picker("Что записать", selection: $kind) {
+                            Text("Поправка").tag("adjustment")
+                            Text("Комиссия получена").tag("platform_paid")
+                        }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
+                    if kind == "adjustment" {
+                        shopSection
+                    }
+                    amountSection
+                    Section("За что поправка") {
+                        TextField("Например: вернул выручку наличными", text: $note, axis: .vertical)
+                            .lineLimit(2...5)
+                    }
                 }
-                if kind == "adjustment" {
-                    shopSection
-                }
-                amountSection
-                Section("За что поправка") {
-                    TextField("Например: вернул выручку наличными", text: $note, axis: .vertical)
-                        .lineLimit(2...5)
-                }
+                .disabled(op.locked)
                 if let e = error {
                     Section { ErrorBanner(message: e) }
                 }
-                Section {
-                    Button {
-                        askConfirm = true
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if busy { ProgressView() } else { Text("Записать").bold() }
-                            Spacer()
+                MoneyOpUnknownSection(guardian: op, whereText: "журнал поправок") { check() }
+                if !op.unknown {
+                    Section {
+                        Button {
+                            guard canSubmit else { return }
+                            askConfirm = true
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if op.busy { ProgressView() } else { Text("Записать").bold() }
+                                Spacer()
+                            }
                         }
+                        .disabled(!canSubmit)
                     }
-                    .disabled(!canSubmit)
                 }
             }
             .navigationTitle("Поправка расчёта")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Отмена") { dismiss() }.disabled(busy)
+                    Button(op.unknown ? "Закрыть" : "Отмена") { close() }.disabled(op.busy || op.checking)
                 }
             }
             .confirmationDialog("Записать поправку?", isPresented: $askConfirm, titleVisibility: .visible) {
@@ -1114,8 +1144,26 @@ struct CourierAdjustSheet: View {
             } message: {
                 Text(confirmText)
             }
+            .alert(foundText ?? "", isPresented: foundShown) {
+                Button("OK") { dismiss() }
+            }
         }
-        .interactiveDismissDisabled(busy)
+        .moneyOpResendDialog(op) { resend() }
+        .interactiveDismissDisabled(op.locked)
+    }
+
+    private var foundShown: Binding<Bool> {
+        Binding(get: { foundText != nil }, set: { if !$0 { foundText = nil } })
+    }
+
+    /// «Отмена»/«Закрыть»: при неизвестном исходе — перечитать карточку (сальдо могло измениться).
+    private func close() {
+        guard !op.busy, !op.checking else { return }
+        if op.unknown {
+            let done = onApplied
+            Task { await done(.null) }
+        }
+        dismiss()
     }
 
     private var shopSection: some View {
@@ -1157,33 +1205,62 @@ struct CourierAdjustSheet: View {
 
     private func send() {
         guard canSubmit, let value = amountValue, let sid = shopId else { return }
-        busy = true
         error = nil
         let plain = NSDecimalNumber(decimal: value).stringValue
+        let negative = kind == "platform_paid" || direction < 0
         let signed = (kind == "adjustment" && direction < 0) ? "-" + plain : plain
         let body: [String: Any?] = ["kind": kind, "shop_id": sid, "amount": signed, "note": noteText]
-        let work = onSubmit
+        // Сервер для platform_paid сам ставит минус (adminAdjust: -abs) и площадку.
+        sentShop = sid
+        sentAmount = negative ? -value : value
         Task { @MainActor in
-            do {
-                try await work(body)
-                Haptics.success()
-                busy = false
-                dismiss()
-            } catch {
-                busy = false
-                if !APIError.isCancellation(error) {
-                    Haptics.error()
-                    self.error = CourierAdjustSheet.errorText(error)
-                }
-            }
+            handle(await op.send("/api/admin/pool/couriers/" + String(courierId) + "/adjust", body: body))
         }
     }
 
-    /// У /adjust нет ключа повтора: если связь оборвалась, запись могла уже сохраниться.
-    static func errorText(_ error: Error) -> String {
-        let lost = "Связь оборвалась — проверьте историю решений и деньги курьера, прежде чем повторять, иначе поправка может записаться дважды."
-        if let e = error as? APIError, e == .offline { return lost }
-        if let u = error as? URLError, u.code == .timedOut || u.code == .networkConnectionLost { return lost }
-        return APIError.describe(error)
+    private func resend() {
+        error = nil
+        Task { @MainActor in
+            handle(await op.resend())
+        }
+    }
+
+    private func handle(_ outcome: MoneyOpOutcome) {
+        let done = onApplied
+        switch outcome {
+        case .done(let r):
+            Haptics.success()
+            let res = r.data
+            Task { await done(res) }
+            dismiss()
+        case .failed(let e):
+            Haptics.error()
+            error = e.message
+        case .unknown(let e):
+            if e != .cancelled { Haptics.error() }
+            // 409 «только что прошло» / «не удалось узнать результат» — сразу смотрим историю.
+            if op.shouldAutoCheck { check() }
+            Task { await done(.null) }
+        case .ignored:
+            break
+        }
+    }
+
+    /// «Проверить»: новая запись adjust в журнале действий с этим заведением и суммой.
+    private func check() {
+        guard let v = sentAmount, let sid = sentShop else { return }
+        let uid = courierId
+        let done = onApplied
+        Task { @MainActor in
+            let found = await op.check { row in
+                guard row["entity_id"].int == uid, row["action"].stringValue == "adjust" else { return false }
+                let d = CourierHistoryRow.parsed(row["new_json"])
+                return d["shop_id"].int == sid && MoneyOp.sameAmount(d["amount"], v)
+            }
+            guard found != nil else { return }
+            Haptics.success()
+            Task { await done(.null) }
+            foundText = "Поправка записана (найдена в журнале действий)."
+        }
     }
 }

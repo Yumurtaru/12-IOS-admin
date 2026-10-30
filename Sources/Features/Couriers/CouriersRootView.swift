@@ -104,10 +104,10 @@ struct CouriersRootView: View {
                     Button {
                         lookupShown = true
                     } label: {
-                        Label("Кто видит заказ", systemImage: "eye")
+                        Label("Кто видит вызов", systemImage: "eye")
                     }
-                    .accessibilityLabel("Кто видит заказ")
-                    .accessibilityHint("Ввести номер заказа и посмотреть, каким курьерам он виден")
+                    .accessibilityLabel("Кто видит вызов")
+                    .accessibilityHint("Ввести номер вызова или заказа и посмотреть, каким курьерам он виден")
                 }
             }
         }

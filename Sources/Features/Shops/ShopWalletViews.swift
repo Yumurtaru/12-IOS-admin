@@ -96,23 +96,34 @@ struct ShopWalletHistoryHeader: View {
 /// Ручное пополнение кошелька магазина: POST /api/admin/shops/{id}/topup
 /// {amount, comment}. Сумма может быть отрицательной (ручное списание), не
 /// больше 1 000 000 ₽ по модулю; повтор той же суммы в течение 20 с сервер отклонит.
+///
+/// Ручка принимает Idempotency-Key (П-62, А316; плюс adminRepeatGuard на 20 с), но есть ли
+/// это на сайте, приложение не знает. Форма (MoneyOpGuard): долгое ожидание ответа (200 с),
+/// при неизвестном исходе — «Проверить» по истории кошелька (GET …/wallet); «Провести ещё
+/// раз» — только если операции нет, с подтверждением, тем же ключом и телом.
 struct ShopTopupSheet: View {
     let shopId: Int
     let shopName: String
     let onDone: (JSON) async -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var op: MoneyOpGuard
     @State private var amountText = "1000"
     @State private var comment = "Наличные"
     @State private var askConfirm = false
-    @State private var busy = false
     @State private var error: String?
     @State private var resultText: String?
+    /// Сумма, ушедшая на сервер (для поиска операции в истории).
+    @State private var sentAmount: Decimal?
 
     init(shopId: Int, shopName: String, onDone: @escaping (JSON) async -> Void) {
         self.shopId = shopId
         self.shopName = shopName
         self.onDone = onDone
+        let path = "/api/admin/shops/" + String(shopId) + "/wallet"
+        _op = StateObject(wrappedValue: MoneyOpGuard(history: { page in
+            MoneyOpPage.paged(try await API.shared.get(path, query: ["page": String(page)]), page: page)
+        }))
     }
 
     private var amount: Decimal? {
@@ -148,31 +159,36 @@ struct ShopTopupSheet: View {
                 } footer: {
                     Text("Отрицательная сумма — ручное списание. Не больше 1 000 000 ₽ за одну операцию.")
                 }
+                .disabled(op.locked)
                 if tooBig {
                     Section { ErrorBanner(message: "Больше 1 000 000 ₽ за одну операцию нельзя") }
                 }
                 if let e = error {
                     Section { ErrorBanner(message: e) }
                 }
-                Section {
-                    Button {
-                        Haptics.tap()
-                        askConfirm = true
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if busy { ProgressView() } else { Text("Зачислить").bold() }
-                            Spacer()
+                MoneyOpUnknownSection(guardian: op, whereText: "историю кошелька") { check() }
+                if !op.unknown {
+                    Section {
+                        Button {
+                            guard !op.locked else { return }
+                            Haptics.tap()
+                            askConfirm = true
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if op.busy { ProgressView() } else { Text((amount ?? 0) < 0 ? "Списать" : "Зачислить").bold() }
+                                Spacer()
+                            }
                         }
+                        .disabled(amount == nil || tooBig || op.locked)
                     }
-                    .disabled(amount == nil || tooBig || busy)
                 }
             }
             .navigationTitle("Пополнить кошелёк")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Закрыть") { dismiss() }.disabled(busy)
+                    Button("Закрыть") { close() }.disabled(op.busy || op.checking)
                 }
             }
             .confirmationDialog(confirmTitle, isPresented: $askConfirm, titleVisibility: .visible) {
@@ -185,34 +201,81 @@ struct ShopTopupSheet: View {
                 Button("OK") { dismiss() }
             }
         }
-        .interactiveDismissDisabled(busy)
+        .moneyOpResendDialog(op) { resend() }
+        // Пока идёт запрос или исход неизвестен, свайпом не закрыть: только «Закрыть».
+        .interactiveDismissDisabled(op.locked)
     }
 
     private var resultShown: Binding<Bool> {
         Binding(get: { resultText != nil }, set: { if !$0 { resultText = nil } })
     }
 
+    /// «Закрыть»: при неизвестном исходе — обновить карточку (баланс мог измениться).
+    private func close() {
+        guard !op.busy, !op.checking else { return }
+        if op.unknown {
+            let done = onDone
+            Task { await done(.null) }
+        }
+        dismiss()
+    }
+
     private func submit() {
-        guard let a = amount, !busy else { return }
-        busy = true
+        guard let a = amount, !tooBig, !op.locked else { return }
         error = nil
         let note = comment.trimmingCharacters(in: .whitespacesAndNewlines)
         let path = "/api/admin/shops/" + String(shopId) + "/topup"
-        let done = onDone
+        sentAmount = a
         Task { @MainActor in
-            do {
-                let res = try await API.shared.post(path, body: ["amount": a, "comment": note])
-                Haptics.success()
-                await done(res)
-                busy = false
-                resultText = "Готово. Баланс: " + Fmt.money(res["balance"])
-            } catch {
-                busy = false
-                if !APIError.isCancellation(error) {
-                    Haptics.error()
-                    self.error = APIError.describe(error)
-                }
+            handle(await op.send(path, body: ["amount": a, "comment": note]))
+        }
+    }
+
+    private func resend() {
+        error = nil
+        Task { @MainActor in
+            handle(await op.resend())
+        }
+    }
+
+    private func handle(_ outcome: MoneyOpOutcome) {
+        switch outcome {
+        case .done(let r):
+            Haptics.success()
+            let res = r.data
+            let done = onDone
+            Task { await done(res) }
+            resultText = "Готово. Баланс: " + Fmt.money(res["balance"])
+        case .failed(let e):
+            Haptics.error()
+            error = e.message
+        case .unknown(let e):
+            if e != .cancelled { Haptics.error() }
+            // 409 «только что прошло» / «не удалось узнать результат» — сразу смотрим историю.
+            if op.shouldAutoCheck { check() }
+            let done = onDone
+            Task { await done(.null) }
+        case .ignored:
+            break
+        }
+    }
+
+    /// «Проверить»: новая строка «topup» с этой суммой и описанием ручного зачисления
+    /// («Ручное зачисление: …», walletApply в admin.php) — чтобы чужое онлайн-пополнение
+    /// той же суммы не сошло за наше.
+    private func check() {
+        guard let a = sentAmount else { return }
+        Task { @MainActor in
+            let found = await op.check { row in
+                let d = row["description"].stringValue
+                return row["type"].stringValue == "topup" && MoneyOp.sameAmount(row["amount"], a)
+                    && (d.isEmpty || d.hasPrefix("Ручное зачисление"))
             }
+            guard let row = found else { return }
+            Haptics.success()
+            let done = onDone
+            Task { await done(.null) }
+            resultText = "Операция прошла (найдена в истории). Баланс: " + Fmt.money(row["balance_after"])
         }
     }
 }

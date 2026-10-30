@@ -6,7 +6,8 @@ import SwiftUI
 ///
 /// GET  /api/admin/returns?status=&escalated=1&q=&page= → {items, stats:{cnt, avg_amount}, total, page, pages}
 ///      строка: id, order_id, shop_id, type, reason_code, status, refund_amount, refund_method, created_at,
-///      shop, client, age_hours. Поиск q — номер заказа/возврата, магазин, клиент.
+///      shop, client, age_hours, order_daily_number (П-62, А316: номер дня заказа — «№N · #id»).
+///      Поиск q — номер заказа (сквозной или номер дня)/возврата, магазин, клиент.
 /// POST /api/admin/returns/{id}/moderate {decision: "approve"} | {decision: "reject", note}
 /// POST /api/admin/returns/{id}/paid {note?} — только для refund_method = manual в статусе approved/refunded.
 /// `openId` — сразу открыть заявку с этим id.
@@ -24,6 +25,8 @@ struct ReturnsRootView: View {
     /// Итог массового отказа: показываем после закрытия листа (алерт поверх листа не всплывёт).
     @State private var deferredResult: String?
     @State private var bulkBusy = false
+    /// Заявка, решение по которой (свайп) сейчас уходит на сервер: строка с индикатором и без действий.
+    @State private var busyRowId: Int?
     @State private var deepLinkShown = false
     @State private var deepLinkHandled = false
 
@@ -43,7 +46,7 @@ struct ReturnsRootView: View {
         list
             .navigationTitle("Возвраты")
             .searchable(text: $model.searchText, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: "Номер заказа, магазин, клиент")
+                        prompt: "№ заказа (или номер дня), магазин, клиент")
             .toolbar { toolbarContent }
             .safeAreaInset(edge: .bottom) { bulkBar }
             .task { await model.loadIfNeeded() }
@@ -148,11 +151,17 @@ struct ReturnsRootView: View {
                 toggle(item)
             }
         } else {
+            let rowBusy = busyRowId != nil && busyRowId == item.id
             NavigationLink(destination: ReturnDetailView(id: item.id ?? 0, initial: item, onChanged: { refreshAfterAction() })) {
                 ReturnsRow(item: item)
+                    .opacity(rowBusy ? 0.5 : 1)
+                    .overlay(alignment: .trailing) {
+                        if rowBusy { ProgressView() }
+                    }
             }
+            .disabled(rowBusy)
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                swipeButtons(item)
+                if !rowBusy { swipeButtons(item) }
             }
         }
     }
@@ -252,6 +261,8 @@ struct ReturnsRootView: View {
         switch op {
         case .approve(let ids):
             if ids.count == 1, let id = ids.first {
+                busyRowId = id
+                defer { busyRowId = nil }
                 try await ReturnsActions.moderate(id: id, approve: true, note: nil)
                 refreshAfterAction()
             } else {
@@ -541,6 +552,10 @@ struct ReturnsRow: View {
 
     private var title: String {
         let ret = "#" + item["id"].stringValue
+        // Номер дня заказа — тот, что называет клиент: «заказ №N · #id» (поле с А316).
+        if let day = item["order_daily_number"].int, day > 0 {
+            return ret + " · заказ №" + String(day) + " · #" + item["order_id"].stringValue
+        }
         let order = "заказ #" + item["order_id"].stringValue
         return ret + " · " + order
     }

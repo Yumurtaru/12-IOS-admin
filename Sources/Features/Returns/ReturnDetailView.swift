@@ -17,6 +17,9 @@ struct ReturnDetailView: View {
     @State private var askReject = false
     @State private var askPaid = false
     @State private var enrichTried = false
+    /// Растёт при каждом действии на этом экране: ответ enrich, начатый до действия,
+    /// не перетирает статус, который уже обновило действие.
+    @State private var actionGen = 0
 
     init(id: Int, initial: JSON? = nil, onChanged: (() -> Void)? = nil) {
         self.id = id
@@ -45,14 +48,12 @@ struct ReturnDetailView: View {
         }
         .sheet(isPresented: $askReject) {
             ReturnsRejectSheet(count: 1) { note in
-                try await ReturnsActions.moderate(id: id, approve: false, note: note)
-                await afterAction()
+                try await act { try await ReturnsActions.moderate(id: id, approve: false, note: note) }
             }
         }
         .sheet(isPresented: $askPaid) {
             ReturnsPaidSheet(row: row) { note in
-                try await ReturnsActions.markPaid(id: id, note: note)
-                await afterAction()
+                try await act { try await ReturnsActions.markPaid(id: id, note: note) }
             }
         }
     }
@@ -103,11 +104,19 @@ struct ReturnDetailView: View {
         }
     }
 
+    /// «Заказ №N · #id», если сервер прислал номер дня (order_daily_number, А316), иначе «Заказ #id».
+    static func orderLinkTitle(_ row: JSON, orderId: Int) -> String {
+        if let day = row["order_daily_number"].int, day > 0 {
+            return "Заказ №" + String(day) + " · #" + String(orderId)
+        }
+        return "Заказ #" + String(orderId)
+    }
+
     private var linksSection: some View {
         Section("Связано") {
             if let oid = row["order_id"].int, oid > 0 {
                 NavigationLink(destination: OrderDetailView(id: oid)) {
-                    Label("Заказ #" + String(oid), systemImage: "list.bullet.rectangle")
+                    Label(ReturnDetailView.orderLinkTitle(row, orderId: oid), systemImage: "list.bullet.rectangle")
                 }
             }
             shopLink
@@ -134,8 +143,7 @@ struct ReturnDetailView: View {
                 ActionButton("Одобрить", systemImage: "checkmark", style: .prominent,
                              confirm: ReturnsActions.approveConfirm(rows: [row]),
                              successMessage: "Возврат одобрен", fullWidth: true) {
-                    try await ReturnsActions.moderate(id: id, approve: true, note: nil)
-                    await afterAction()
+                    try await act { try await ReturnsActions.moderate(id: id, approve: true, note: nil) }
                 }
                 Button(role: .destructive) {
                     askReject = true
@@ -197,18 +205,39 @@ struct ReturnDetailView: View {
         }
     }
 
-    /// Открыли из списка (строка без подробностей) — тихо дополнить карточкой по id
-    /// (П-29.4). Не вышло (старый сервер, нет сети) — остаётся строка списка, без ошибки.
+    /// Открыли из списка (строка без подробностей) — дополнить карточкой по id (П-29.4).
+    /// Строка списка могла устареть (продавец уже одобрил) — свежие поля карточки
+    /// (статус, сумма, комментарий модератора и остальное) берём с сервера; поля, которых
+    /// в карточке нет, остаются из строки. Действие на этом экране, сделанное раньше
+    /// ответа, не перетираем. Не вышло (старый сервер, нет сети) — остаётся строка списка.
     private func enrich() async {
         guard !enrichTried, row.object["log"] == nil else { return }
         enrichTried = true
+        let gen = actionGen
         guard let one = try? await API.shared.get("/api/admin/returns/" + String(id)), one.id == id else { return }
-        // Только недостающие поля: статус, уже обновлённый действием на этом экране, не перетираем.
         var o = row.object
-        for (k, v) in one.object where o[k] == nil {
-            o[k] = v
+        if gen == actionGen {
+            for (k, v) in one.object { o[k] = v }
+        } else {
+            for (k, v) in one.object where o[k] == nil { o[k] = v }
         }
         row = .object(o)
+    }
+
+    /// Действие с заявкой. 409 «Заявка уже обработана» (её решил продавец или другой
+    /// администратор) — перечитать карточку, чтобы кнопки и статус стали честными.
+    private func act(_ work: () async throws -> Void) async throws {
+        actionGen += 1
+        do {
+            try await work()
+        } catch {
+            if let e = error as? APIError, e.status == 409 {
+                await load()
+                onChanged?()
+            }
+            throw error
+        }
+        await afterAction()
     }
 
     private func afterAction() async {

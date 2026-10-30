@@ -85,16 +85,19 @@ struct WalletsSellersView: View {
         let num = String(t.topupId)
         let head = "Заявка №" + num + " · " + amountText
         let msg = head + " · " + t.who + ". Деньги не зачисляются, заявка закрывается."
-        return TextInputSheet(title: "Отклонить заявку", message: msg, placeholder: t.defaultReason,
-                              initial: t.defaultReason, multiline: true, submitTitle: "Отклонить",
-                              minLength: 0, destructive: true) { text in
-            let reason = text.isEmpty ? t.defaultReason : text
+        // 409 «оплачен в ЮKassa» и 502 «ЮKassa не ответила» → «Отклонить без проверки?» (force)
+        // разбирает TopupRejectSheet (П-62, А316; /reject — А516).
+        return TopupRejectSheet(title: "Отклонить заявку", message: msg, placeholder: t.defaultReason,
+                                initial: t.defaultReason, submitTitle: "Отклонить") { reason, force in
+            var body: [String: Any?] = ["reason": reason]
+            if force { body["force"] = true }
             switch t.mode {
             case .plain:
-                try await API.shared.post("/api/admin/topups/\(t.topupId)/reject", body: ["reason": reason])
+                try await API.shared.post("/api/admin/topups/\(t.topupId)/reject", body: body)
             case .resolve:
-                try await API.shared.post("/api/admin/topups/\(t.topupId)/resolve",
-                                          body: ["kind": t.kind, "action": "reject", "reason": reason])
+                body["kind"] = t.kind
+                body["action"] = "reject"
+                try await API.shared.post("/api/admin/topups/\(t.topupId)/resolve", body: body)
             }
             notice = "Заявка №" + String(t.topupId) + " отклонена"
             await reload()
@@ -420,6 +423,12 @@ struct WalletsOrphanRow: View {
 }
 
 /// Зависшая онлайн-заявка: проверить платёж в ЮKassa, зачислить оплаченное или отклонить.
+///
+/// «Отклонить» (resolve action=reject) ЮKassa не спрашивает, а отклонённая оплаченная
+/// заявка зачислится разве что по позднему уведомлению ЮKassa. Поэтому без свежей проверки
+/// (не старше 2 мин) — предупреждение «Платёж мог пройти — сначала „Проверить в ЮKassa“»;
+/// проверка показала оплату или waiting_for_capture (деньги заблокированы у плательщика) —
+/// отдельное подтверждение.
 struct WalletsStuckRow: View {
     let item: JSON
     let onReject: () -> Void
@@ -427,6 +436,15 @@ struct WalletsStuckRow: View {
 
     @State private var check: JSON?
     @State private var checkError: String?
+    @State private var askCheckFirst = false
+    @State private var askRejectPaid = false
+    @State private var checkingBeforeReject = false
+    @State private var askRejectHeld = false
+    /// Когда ЮKassa ответила на проверку: ответ старше 2 мин не доверяем.
+    @State private var checkedAt: Date?
+
+    /// Сколько секунд доверяем ответу проверки.
+    static let checkTTL: TimeInterval = 120
 
     init(item: JSON, onReject: @escaping () -> Void, onCredited: @escaping (String) async -> Void) {
         self.item = item
@@ -459,11 +477,16 @@ struct WalletsStuckRow: View {
                     await runCheck()
                 }
                 Button(role: .destructive) {
-                    onReject()
+                    rejectTapped()
                 } label: {
-                    Label("Отклонить", systemImage: "xmark")
+                    if checkingBeforeReject {
+                        ProgressView()
+                    } else {
+                        Label("Отклонить", systemImage: "xmark")
+                    }
                 }
                 .buttonStyle(.bordered)
+                .disabled(checkingBeforeReject)
             }
             if let e = checkError {
                 Text(e).font(.footnote).foregroundColor(Brand.red)
@@ -473,6 +496,76 @@ struct WalletsStuckRow: View {
             }
         }
         .padding(.vertical, 4)
+        .confirmationDialog("Платёж мог пройти", isPresented: $askCheckFirst, titleVisibility: .visible) {
+            Button("Проверить в ЮKassa") { checkThenReject() }
+            Button("Отклонить без проверки", role: .destructive) { onReject() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Сначала нажмите «Проверить в ЮKassa». Если платёж прошёл, а заявку отклонить, человек увидит отказ; зачислится она, только если позже сработает уведомление ЮKassa, а при несовпадении суммы или валюты — только вручную.")
+        }
+        .confirmationDialog("ЮKassa: платёж ждёт подтверждения", isPresented: $askRejectHeld, titleVisibility: .visible) {
+            Button("Всё равно отклонить", role: .destructive) { onReject() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Статус waiting_for_capture: деньги плательщика уже заблокированы и ждут подтверждения в кабинете ЮKassa. Отклонив заявку, не забудьте отменить платёж в ЮKassa — иначе деньги так и останутся заблокированы.")
+        }
+        .confirmationDialog("ЮKassa: платёж оплачен", isPresented: $askRejectPaid, titleVisibility: .visible) {
+            Button("Всё равно отклонить", role: .destructive) { onReject() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Деньги получены. Обычно оплаченную заявку зачисляют кнопкой «Зачислить», а не отклоняют.")
+        }
+    }
+
+    /// Оплачен ли платёж по ответу проверки (как в checkResult).
+    private static func isPaid(_ c: JSON) -> Bool {
+        let currency = c["currency"].stringValue.uppercased()
+        let paid = c["paid"].decimal ?? 0
+        let refunded = c["refunded"].decimal ?? 0
+        return c["status"].string == "succeeded" && currency == "RUB" && paid > 0 && refunded + Decimal(1) / Decimal(100) < paid
+    }
+
+    /// Свежий ли ответ проверки (не старше checkTTL).
+    private var checkFresh: Bool {
+        guard let t = checkedAt else { return false }
+        return Date().timeIntervalSince(t) < WalletsStuckRow.checkTTL
+    }
+
+    /// «Отклонить»: без свежей проверки — предупреждение; проверка показала оплату или
+    /// удержание (waiting_for_capture) — подтверждение.
+    private func rejectTapped() {
+        guard let c = check, checkFresh else {
+            Haptics.warning()
+            askCheckFirst = true
+            return
+        }
+        if c["status"].string == "waiting_for_capture" {
+            Haptics.warning()
+            askRejectHeld = true
+        } else if WalletsStuckRow.isPaid(c) {
+            Haptics.warning()
+            askRejectPaid = true
+        } else {
+            onReject()
+        }
+    }
+
+    /// Проверить платёж; не оплачен — отклонить, оплачен — показать результат (с «Зачислить»).
+    private func checkThenReject() {
+        guard !checkingBeforeReject else { return }
+        checkingBeforeReject = true
+        Task { @MainActor in
+            await runCheck()
+            checkingBeforeReject = false
+            guard let c = check, checkFresh else { return }   // не вышло — текст ошибки уже под строкой
+            if c["status"].string == "waiting_for_capture" {
+                askRejectHeld = true
+            } else if WalletsStuckRow.isPaid(c) {
+                askRejectPaid = true
+            } else {
+                onReject()
+            }
+        }
     }
 
     private func runCheck() async {
@@ -481,6 +574,7 @@ struct WalletsStuckRow: View {
         do {
             let r = try await API.shared.get("/api/admin/topups/\(id)/payment", query: ["kind": k])
             check = r
+            checkedAt = Date()
             checkError = nil
         } catch {
             if !APIError.isCancellation(error) {
@@ -505,7 +599,7 @@ struct WalletsStuckRow: View {
         // Сервер (resolve credit_actual) зачисляет и при ЧАСТИЧНОМ возврате — остаток
         // «оплачено − возвращено»; отказ только при возврате целиком.
         let net = refunded > 0 ? paid - refunded : paid
-        let ok = c["status"].string == "succeeded" && currency == "RUB" && paid > 0 && refunded + Decimal(1) / Decimal(100) < paid
+        let ok = WalletsStuckRow.isPaid(c)
         let paidText = WalletsStuckRow.amount(c["paid"], currency: currency)
         let statusText = WalletsLabels.yooStatus(c["status"].string)
         VStack(alignment: .leading, spacing: 6) {
@@ -535,6 +629,9 @@ struct WalletsStuckRow: View {
     }
 
     static func whyNot(status: String?, currency: String, paid: Decimal, refunded: Decimal) -> String {
+        if status == "waiting_for_capture" {
+            return "Зачислять нельзя: платёж ждёт подтверждения в кабинете ЮKassa (деньги заблокированы у плательщика)."
+        }
         if status != "succeeded" { return "Зачислять нельзя: платёж не оплачен." }
         if currency != "RUB" { return "Зачислять нельзя: платёж не в рублях — верните деньги в кабинете ЮKassa." }
         if paid <= 0 { return "Зачислять нельзя: в платеже нулевая сумма." }

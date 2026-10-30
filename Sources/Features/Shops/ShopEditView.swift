@@ -9,6 +9,9 @@ import SwiftUI
 /// настройках площадки), статус, заметка администратора. Плюс реквизиты,
 /// которые сервер тоже принимает (название, адрес, телефон, e-mail, ИНН, форма,
 /// режим, город) — они уходят, только если их поменяли.
+///
+/// Смена статуса, комиссии, сборов или тарифа (деньги с каждого заказа, видимость на
+/// витрине) — только после подтверждения с перечнем «было → стало».
 struct ShopEditView: View {
     let shop: JSON
     let onSaved: () async -> Void
@@ -120,7 +123,8 @@ struct ShopEditView: View {
             }
             requisitesSection
             Section {
-                ActionButton("Сохранить", systemImage: "checkmark", style: .prominent, fullWidth: true) {
+                ActionButton("Сохранить", systemImage: "checkmark", style: .prominent,
+                             confirm: saveConfirm, fullWidth: true) {
                     try await save()
                 }
             }
@@ -238,6 +242,98 @@ struct ShopEditView: View {
         if !cityName.isEmpty { return cityName }
         if !cityId.isEmpty { return "id " + cityId }
         return "—"
+    }
+
+    // MARK: - Подтверждение
+
+    /// Подтверждение, если менялись статус, комиссия, сборы или тариф (иначе nil — сразу).
+    private var saveConfirm: ConfirmAction? {
+        let list = sensitiveChanges
+        guard !list.isEmpty else { return nil }
+        let blocking = status == "blocked" && shop["status"].stringValue != "blocked"
+        var msg = list.joined(separator: "\n")
+        if blocking { msg += "\n\nОрганизация пропадёт с витрины у клиентов." }
+        return ConfirmAction(title: "Сохранить изменения «" + shop["name"].stringValue + "»?", message: msg,
+                             confirmLabel: "Сохранить", destructive: blocking)
+    }
+
+    /// Ставка для показа: «10 %» / «50 ₽»; пусто — «—».
+    private static func rateText(_ v: Decimal?, type: String) -> String {
+        guard let d = v else { return "—" }
+        return type == "fixed" ? Fmt.money(d) : Fmt.number(d) + " %"
+    }
+
+    /// Число из поля для сравнения (пусто — 0, мусор — nil).
+    private static func fieldNumber(_ text: String) -> Decimal? {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { return 0 }
+        return Fmt.parseDecimal(t)
+    }
+
+    private static func same(_ a: Decimal?, _ b: Decimal?) -> Bool {
+        (a ?? 0) == (b ?? 0)
+    }
+
+    private func planLabel(_ id: String) -> String {
+        if id.isEmpty { return "без тарифа" }
+        return planOptions.first(where: { $0.value == id })?.label ?? ("Тариф #" + id)
+    }
+
+    /// «Комиссия: 10 % → 12 %» — по каждому изменённому денежному/статусному полю.
+    private var sensitiveChanges: [String] {
+        var out: [String] = []
+        let oldStatus = shop["status"].stringValue
+        if status != oldStatus {
+            out.append("Статус: " + ShopsLabels.status(oldStatus) + " → " + ShopsLabels.status(status))
+        }
+        let oldCType = shop["commission_type"].string == "fixed" ? "fixed" : "percent"
+        let oldC = shop["commission_value"].decimal
+        let newC = ShopEditView.fieldNumber(commissionValue)
+        if oldCType != commissionType || !ShopEditView.same(oldC, newC) {
+            out.append("Комиссия: " + ShopEditView.rateText(oldC, type: oldCType) + " → "
+                       + (newC == nil ? commissionValue : ShopEditView.rateText(newC, type: commissionType)))
+        }
+        if hasCommissionFee {
+            let oldF = shop["commission_fee"].decimal
+            let t = commissionFee.trimmingCharacters(in: .whitespaces)
+            let newF: Decimal? = t.isEmpty ? nil : Fmt.parseDecimal(t)
+            let was = oldF.map { Fmt.money($0) } ?? "по умолчанию"
+            let will = t.isEmpty ? "по умолчанию" : (newF.map { Fmt.money($0) } ?? t)
+            if was != will {
+                out.append("Комиссия за заказ: " + was + " → " + will)
+            }
+        }
+        let oldFeeType = shop["service_fee_type"].string == "fixed" ? "fixed" : "percent"
+        let oldFee = oldFeeType == "fixed" ? shop["service_fee_fixed"].decimal : shop["service_fee_percent"].decimal
+        let newFee = ShopEditView.fieldNumber(feeValue)
+        if oldFeeType != feeType || !ShopEditView.same(oldFee, newFee) {
+            out.append("Сервисный сбор: " + ShopEditView.rateText(oldFee ?? 0, type: oldFeeType) + " → "
+                       + (newFee == nil ? feeValue : ShopEditView.rateText(newFee, type: feeType)))
+        }
+        let oldPayer = shop["service_fee_payer"].string == "shop" ? "shop" : "client"
+        if payer != oldPayer {
+            out.append("Сбор платит: " + (oldPayer == "shop" ? "магазин" : "клиент") + " → " + (payer == "shop" ? "магазин" : "клиент"))
+        }
+        if hasPosFee {
+            let oldOn = shop["pos_service_fee_enabled"].boolValue
+            let oldPType = shop["pos_service_fee_type"].string == "percent" ? "percent" : "fixed"
+            let oldP = oldPType == "percent" ? shop["pos_service_fee_percent"].decimal : shop["pos_service_fee_fixed"].decimal
+            let newP = ShopEditView.fieldNumber(posValue)
+            if oldOn != posEnabled {
+                out.append("Сбор за кассу/киоск: " + (oldOn ? "включён" : "выключен") + " → " + (posEnabled ? "включён" : "выключен"))
+            }
+            if posEnabled && (oldPType != posType || !ShopEditView.same(oldP, newP)) {
+                out.append("Размер сбора за кассу/киоск: " + ShopEditView.rateText(oldP ?? 0, type: oldPType) + " → "
+                           + (newP == nil ? posValue : ShopEditView.rateText(newP, type: posType)))
+            }
+        }
+        if plansEnabled {
+            let oldPlan = shop["subscription_plan_id"].int.map { String($0) } ?? ""
+            if planId != oldPlan {
+                out.append("Тариф: " + planLabel(oldPlan) + " → " + planLabel(planId))
+            }
+        }
+        return out
     }
 
     // MARK: - Загрузка и сохранение

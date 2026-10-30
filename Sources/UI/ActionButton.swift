@@ -251,6 +251,11 @@ extension View {
 }
 
 /// Реализация `.confirmAction(...)`.
+///
+/// Пока действие выполняется — посередине «Выполняется…» (прокрутку не мешает), а новое
+/// подтверждение (второй свайп «Одобрить» и т.п.) отбрасывается: без этого после свайпа
+/// несколько секунд ничего не происходило, и его делали ещё раз (второй раз — лишнее
+/// «Не получилось»). Строку саму блокирует экран, если знает её (возвраты: busyRowId).
 struct ConfirmActionModifier: ViewModifier {
     @Binding var pending: ConfirmAction?
     let perform: () async throws -> Void
@@ -258,13 +263,33 @@ struct ConfirmActionModifier: ViewModifier {
     @State private var showDialog = false
     @State private var showTyped = false
     @State private var error: String?
+    @State private var busy = false
 
     func body(content: Content) -> some View {
         content
+            .overlay {
+                if busy {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Выполняется…")
+                            .font(.subheadline)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .accessibilityElement(children: .combine)
+                    .allowsHitTesting(false)
+                }
+            }
             .onChange(of: pending?.id) { _ in
                 guard let p = pending else { return }
-                current = p
                 pending = nil
+                // Прошлое действие ещё идёт — второе не начинаем.
+                guard !busy else {
+                    Haptics.warning()
+                    return
+                }
+                current = p
                 if p.typedPhrase != nil { showTyped = true } else { showDialog = true }
             }
             .confirmationDialog(current?.title ?? "", isPresented: $showDialog, titleVisibility: .visible) {
@@ -292,6 +317,8 @@ struct ConfirmActionModifier: ViewModifier {
     }
 
     private func run() {
+        guard !busy else { return }
+        busy = true
         let work = perform
         Task { @MainActor in
             do {
@@ -303,6 +330,7 @@ struct ConfirmActionModifier: ViewModifier {
                     self.error = APIError.describe(error)
                 }
             }
+            busy = false
         }
     }
 }

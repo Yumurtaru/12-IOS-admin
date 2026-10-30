@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// «Кто видит заказ» — волна А96 сайта (ОТВЕТЫ-САЙТА.md, раздел «Кто видит вызов»):
+/// «Кто видит вызов» — волна А96 сайта (ОТВЕТЫ-САЙТА.md, раздел «Кто видит вызов»):
 ///
 /// GET /api/admin/pool/calls/{id}/visibility →
 /// `{call: {id, kind, status, status_label, city, client_id, wave, created_at, expires_at, search_minutes},
@@ -11,7 +11,12 @@ import SwiftUI
 /// `courier_status`, `rules`, `city`, `own_parcel`, `target`, `declined`, `offline`, `blocked`,
 /// `busy`, `vehicle`, `cash`, `wave`) — только для значка и цвета.
 ///
-/// 404 с кодом `not_found` — «Заказ не найден». 404 «Эндпоинт не найден» (`no_route`, сервер
+/// Ручка ищет по НОМЕРУ ВЫЗОВА курьера (pool_calls.id, CourierPool::adminVisibility), а не по
+/// номеру заказа (orders.daily_number — его называют заведение и клиент). Поэтому везде
+/// «Вызов №…»; по номеру заказа вызов ищет сервер: GET /api/admin/pool/calls?q=<число>
+/// (П-62, А316) — CallVisibilityLookupSheet.
+///
+/// 404 с кодом `not_found` — «Вызов не найден». 404 «Эндпоинт не найден» (`no_route`, сервер
 /// до А96) — ручки нет: входы в экран прячутся (CallVisibilitySupport).
 enum CallVisibility {
     /// Путь ручки для вызова.
@@ -32,7 +37,7 @@ enum CallVisibility {
         switch kind ?? "" {
         case "parcel": return "Посылка"
         case "shop": return "Доставка из заведения"
-        default: return "Заказ"
+        default: return "Доставка"
         }
     }
 
@@ -179,7 +184,7 @@ final class CallVisibilityLoader: ObservableObject {
             guard gen == generation else { return }
             CallVisibilitySupport.shared.markAvailable()
             guard j.isObject else {
-                if data.isNull { state = .empty("Сервер не прислал данных о заказе") }
+                if data.isNull { state = .empty("Сервер не прислал данных о вызове") }
                 return
             }
             data = j
@@ -212,15 +217,19 @@ final class CallVisibilityLoader: ObservableObject {
     }
 }
 
-/// Экран «Кто видит заказ»: шапка вызова, «Видят: N из M на линии в городе», заметки
+/// Экран «Кто видит вызов»: шапка вызова, «Видят: N из M на линии в городе», заметки
 /// сервера и список курьеров города — видит ✓ / не видит ✗, на линии, когда был, причины.
+/// `title` — как вызов назван там, откуда открыли («Заказ №57» из call_title жалобы,
+/// «Доставка №…» из проблемы): показываем рядом с номером вызова, чтобы было ясно, что это одно и то же.
 struct CallVisibilityView: View {
     let callId: Int
+    let title: String?
 
     @StateObject private var loader: CallVisibilityLoader
 
-    init(callId: Int) {
+    init(callId: Int, title: String? = nil) {
         self.callId = callId
+        self.title = title
         _loader = StateObject(wrappedValue: CallVisibilityLoader(callId: callId))
     }
 
@@ -239,7 +248,7 @@ struct CallVisibilityView: View {
             content
         }
         .listStyle(.insetGrouped)
-        .navigationTitle("Кто видит заказ")
+        .navigationTitle("Кто видит вызов")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await loader.load() }
         .task { await loader.loadIfNeeded() }
@@ -269,10 +278,10 @@ struct CallVisibilityView: View {
     private func emptyView(_ text: String?) -> some View {
         switch loader.problem {
         case .notFound:
-            EmptyStateView(title: "Заказ не найден", systemImage: "questionmark.circle",
-                           message: "Заказа №" + String(callId) + " нет. Проверьте номер.")
+            EmptyStateView(title: "Вызов не найден", systemImage: "questionmark.circle",
+                           message: "Вызова курьера №" + String(callId) + " нет. Это номер вызова, а не номер заказа — проверьте номер или найдите вызов по номеру заказа.")
         case .noRoute:
-            EmptyStateView(title: "Сервер пока не показывает, кто видит заказ", systemImage: "eye.slash",
+            EmptyStateView(title: "Сервер пока не показывает, кто видит вызов", systemImage: "eye.slash",
                            message: "Нужно обновить сайт (волна А96).")
         case nil:
             EmptyStateView(title: text ?? "Нет данных", systemImage: "tray")
@@ -293,7 +302,7 @@ struct CallVisibilityView: View {
         }
         if couriers.isEmpty {
             Section {
-                Text("Курьеров в городе заказа нет.")
+                Text("Курьеров в городе вызова нет.")
                     .font(.subheadline)
                     .foregroundColor(Brand.muted)
             }
@@ -329,12 +338,15 @@ struct CallVisibilityView: View {
         Section {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(CallVisibility.kindLabel(call["kind"].string) + " №" + (call["id"].string ?? String(callId)))
+                    Text("Вызов №" + (call["id"].string ?? String(callId)))
                         .font(.body.weight(.semibold))
                     Spacer(minLength: 6)
                     StatusBadge(call["status_label"].nonEmptyString ?? Fmt.statusLabel(call["status"].string),
                                 color: CallVisibility.statusColor(call["status"].string))
                 }
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(Brand.muted)
                 Text(countLine)
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(d["visible_count"].intValue > 0 ? Brand.green : Brand.red)
@@ -353,6 +365,13 @@ struct CallVisibilityView: View {
                 KVRow("Время поиска", String(m) + " мин")
             }
         }
+    }
+
+    /// «Доставка из заведения · Заказ №57».
+    private var subtitle: String {
+        var parts: [String] = [CallVisibility.kindLabel(call["kind"].string)]
+        if let t = title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { parts.append(t) }
+        return parts.joined(separator: " · ")
     }
 
     /// «Видят: 1 из 2 на линии в городе».
@@ -403,7 +422,7 @@ struct CallVisibilityCourierRow: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: visible ? "checkmark.circle.fill" : "xmark.circle.fill")
                     .foregroundColor(visible ? Brand.green : Brand.red)
-                    .accessibilityLabel(visible ? "Видит заказ" : "Не видит заказ")
+                    .accessibilityLabel(visible ? "Видит вызов" : "Не видит вызов")
                 Text(name)
                     .font(.body.weight(.semibold))
                     .lineLimit(2)
@@ -443,27 +462,36 @@ struct CallVisibilityCourierRow: View {
     }
 }
 
-/// Строка-ссылка «Кто видит заказ №N» для карточек проблем и жалоб. На старом сервере
-/// (и пока ручку не проверили) — ничего.
+/// Строка-ссылка «Кто видит: …» для карточек проблем и жалоб. `title` — то же название
+/// вызова, что в карточке выше («Заказ №57» из call_title, «Доставка №…»), чтобы одна и
+/// та же доставка не называлась в одной карточке двумя разными номерами. На старом
+/// сервере (и пока ручку не проверили) — ничего.
 struct CallVisibilityLink: View {
     let callId: Int
+    let title: String?
     @ObservedObject private var support = CallVisibilitySupport.shared
 
-    init(callId: Int) {
+    init(callId: Int, title: String? = nil) {
         self.callId = callId
+        self.title = title
+    }
+
+    private var name: String {
+        if let t = title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty { return t }
+        return "Вызов №" + String(callId)
     }
 
     var body: some View {
         if support.showsEntry && callId > 0 {
-            NavigationLink(destination: CallVisibilityView(callId: callId)) {
-                Label("Кто видит заказ №" + String(callId), systemImage: "eye")
+            NavigationLink(destination: CallVisibilityView(callId: callId, title: title)) {
+                Label("Кто видит: " + name, systemImage: "eye")
             }
-            .accessibilityHint("Какие курьеры видят этот заказ в ленте и почему")
+            .accessibilityHint("Какие курьеры видят этот вызов в ленте и почему")
         }
     }
 }
 
-/// Строка списка, которая открывает «Кто видит заказ» (последние доставки в карточке курьера).
+/// Строка списка, которая открывает «Кто видит вызов» (последние доставки в карточке курьера).
 /// Ручки нет — строка остаётся простой, как раньше.
 struct CallVisibilityRowLink<Content: View>: View {
     let callId: Int
@@ -480,25 +508,49 @@ struct CallVisibilityRowLink<Content: View>: View {
             NavigationLink(destination: CallVisibilityView(callId: callId)) {
                 content
             }
-            .accessibilityHint("Открыть «Кто видит заказ»")
+            .accessibilityHint("Открыть «Кто видит вызов»")
         } else {
             content
         }
     }
 }
 
-/// Лист «Кто видит заказ» по номеру (кнопка с глазом в шапке раздела «Курьеры»):
-/// поле «Заказ №» и «Показать» — экран открывается внутри листа.
+/// Вызов, открытый из поиска.
+struct CallVisibilityTarget: Hashable {
+    let id: Int
+    let title: String?
+}
+
+/// Лист «Кто видит вызов» (кнопка с глазом в шапке раздела «Курьеры»): по номеру вызова
+/// курьера или по номеру заказа.
+///
+/// Сервер ищет «кто видит» только по номеру вызова (pool_calls.id). Номер заказа
+/// (orders.daily_number) у каждого заведения свой и повторяется по дням, поэтому вызов по
+/// нему ищет сам сервер: GET /api/admin/pool/calls?q=<число> (П-62, А316) — номер вызова,
+/// сквозной номер заказа или номер дня заказа за 3 последних дня; `meta.total` учитывает
+/// поиск. Показываем все совпадения по заказу (сквозной номер или номер дня) с заведением и
+/// датой. Старый сервер `q` не знает — тогда, как раньше, листаем список: живые вызовы
+/// (status=active, до 4 страниц по 50) и последние 100 любых.
 struct CallVisibilityLookupSheet: View {
+    enum Mode: String {
+        case call, order
+    }
+
     @Environment(\.dismiss) private var dismiss
+    @State private var mode: Mode = .call
     @State private var text = ""
-    @State private var openedId = 0
+    @State private var opened = CallVisibilityTarget(id: 0, title: nil)
     @State private var showResult = false
+    @State private var searching = false
+    @State private var matches: [JSON]?
+    @State private var searchedNumber = 0
+    @State private var searchError: String?
     @FocusState private var focused: Bool
 
     private var number: Int? {
         let digits = text.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "№", with: "")
+            .replacingOccurrences(of: "#", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !digits.isEmpty, digits.allSatisfy({ $0.isNumber }), let n = Int(digits), n > 0 else { return nil }
         return n
@@ -508,33 +560,51 @@ struct CallVisibilityLookupSheet: View {
         NavigationStack {
             Form {
                 Section {
+                    Picker("Что известно", selection: $mode) {
+                        Text("Номер вызова").tag(Mode.call)
+                        Text("Номер заказа").tag(Mode.order)
+                    }
+                    .pickerStyle(.segmented)
                     TextField("Например, 12", text: $text)
                         .keyboardType(.numberPad)
                         .focused($focused)
                         .submitLabel(.search)
                         .onSubmit(open)
-                        .accessibilityLabel("Номер заказа")
+                        .accessibilityLabel(mode == .call ? "Номер вызова" : "Номер заказа")
                 } header: {
-                    Text("Заказ №")
+                    Text(mode == .call ? "Вызов курьера №" : "Заказ №")
                 } footer: {
-                    Text("Номер вызова курьера — как в «Проблемах», «Жалобах» и последних доставках курьера.")
+                    Text(mode == .call
+                         ? "Номер вызова курьера — как в «Проблемах», «Жалобах» и последних доставках курьера. Это не номер заказа."
+                         : "Номер заказа, который называют заведение и клиент (номер дня за последние 3 дня) или сквозной номер заказа. Номер дня у каждого заведения свой — совпадений может быть несколько.")
                 }
                 Section {
                     Button(action: open) {
                         HStack {
                             Spacer()
-                            Text("Показать, кто видит").bold()
+                            if searching {
+                                ProgressView()
+                                Text("Ищем вызов…")
+                            } else {
+                                Text(mode == .call ? "Показать, кто видит" : "Найти вызов").bold()
+                            }
                             Spacer()
                         }
                     }
-                    .disabled(number == nil)
+                    .disabled(number == nil || searching)
+                }
+                if let e = searchError {
+                    Section { ErrorBanner(message: e) }
+                }
+                if mode == .order, let list = matches {
+                    matchesSection(list)
                 }
             }
-            .navigationTitle("Кто видит заказ")
+            .navigationTitle("Кто видит вызов")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(isPresented: $showResult) {
-                CallVisibilityView(callId: openedId)
-                    .id(openedId)
+                CallVisibilityView(callId: opened.id, title: opened.title)
+                    .id(opened.id)
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -542,13 +612,155 @@ struct CallVisibilityLookupSheet: View {
                 }
             }
             .onAppear { focused = true }
+            .onChange(of: mode) { _ in
+                matches = nil
+                searchError = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func matchesSection(_ list: [JSON]) -> some View {
+        Section {
+            if list.isEmpty {
+                Text("Вызова курьера для заказа №" + String(searchedNumber) + " не нашлось (номер дня ищется за последние 3 дня). Если заказ старый — введите сквозной номер заказа или откройте «Кто видит» из карточки проблемы, жалобы или курьера.")
+                    .font(.subheadline)
+                    .foregroundColor(Brand.muted)
+            } else {
+                ForEach(list, id: \.stableID) { c in
+                    Button {
+                        go(CallVisibilityTarget(id: c.id ?? 0, title: c["title"].nonEmptyString))
+                    } label: {
+                        CallVisibilityMatchRow(call: c)
+                    }
+                    .disabled((c.id ?? 0) <= 0)
+                }
+            }
+        } header: {
+            Text("Найдено: " + String(list.count))
         }
     }
 
     private func open() {
-        guard let n = number else { return }
+        guard let n = number, !searching else { return }
         focused = false
-        openedId = n
+        searchError = nil
+        if mode == .call {
+            go(CallVisibilityTarget(id: n, title: nil))
+            return
+        }
+        searching = true
+        matches = nil
+        Task { @MainActor in
+            do {
+                let list = try await CallVisibilityLookupSheet.findByOrder(n)
+                searchedNumber = n
+                matches = list
+                // Номер заказа повторяется (по заведениям и дням) — всегда показываем список
+                // с заведением и датой; сами открываем только единственный живой вызов за сегодня.
+                if list.count == 1, let only = list.first, let id = only.id, id > 0,
+                   CallVisibilityLookupSheet.isLiveToday(only) {
+                    go(CallVisibilityTarget(id: id, title: only["title"].nonEmptyString))
+                }
+            } catch {
+                if !APIError.isCancellation(error) {
+                    searchError = "Найти по номеру заказа не вышло: " + APIError.describe(error)
+                        + "\nВведите номер вызова курьера."
+                }
+            }
+            searching = false
+        }
+    }
+
+    private func go(_ target: CallVisibilityTarget) {
+        guard target.id > 0 else { return }
+        opened = target
         showResult = true
+    }
+
+    /// Живой вызов (ищем / принят / забран), созданный сегодня по Москве.
+    static func isLiveToday(_ c: JSON) -> Bool {
+        guard ["searching", "accepted", "picked"].contains(c["status"].stringValue),
+              let d = Fmt.parseDate(c["created_at"].string) else { return false }
+        return Fmt.ymd(d) == Fmt.ymd(Date())
+    }
+
+    /// Вызовы заказа n: сервер ищет по `q` (сквозной номер заказа или номер дня за 3 дня);
+    /// оставляем совпадения по заказу (не по номеру вызова). Старый сервер `q` не знает и
+    /// отдаёт обычный список — тогда листаем, как раньше (findByOrderPaging).
+    static func findByOrder(_ n: Int) async throws -> [JSON] {
+        var found: [JSON] = []
+        var seen = Set<Int>()
+        var page = 1
+        while page <= 3 {
+            let res = try await API.shared.getResult("/api/admin/pool/calls",
+                                                     query: ["q": String(n), "page": String(page)])
+            let items = res.data.isArray ? res.data.array : res.data["items"].array
+            // Строка, не подходящая ни по вызову, ни по заказу, — сервер поиск не применил.
+            let ignored = items.contains { it in
+                it.id != n && it["order_id"].int != n && it["order_number"].int != n
+            }
+            if ignored { return try await findByOrderPaging(n) }
+            for it in items where it["order_number"].int == n || it["order_id"].int == n {
+                guard let id = it.id, seen.insert(id).inserted else { continue }
+                found.append(it)
+            }
+            let total = res.meta["total"].int ?? 0
+            if items.count < 50 || page * 50 >= total { break }
+            page += 1
+        }
+        return found
+    }
+
+    /// Старый сервер: вызовы с order_number == n — живые (до 4 страниц) и последние 100 любых.
+    static func findByOrderPaging(_ n: Int) async throws -> [JSON] {
+        var found: [JSON] = []
+        var seen = Set<Int>()
+        let passes: [([String: String?], Int)] = [(["status": "active"], 4), ([:], 2)]
+        for (filters, maxPages) in passes {
+            var page = 1
+            while page <= maxPages {
+                var q = filters
+                q["page"] = String(page)
+                let res = try await API.shared.getResult("/api/admin/pool/calls", query: q)
+                let items = res.data.isArray ? res.data.array : res.data["items"].array
+                for it in items where it["order_number"].int == n {
+                    guard let id = it.id, seen.insert(id).inserted else { continue }
+                    found.append(it)
+                }
+                let total = res.meta["total"].int ?? 0
+                if items.count < 50 || page * 50 >= total { break }
+                page += 1
+            }
+        }
+        return found
+    }
+}
+
+/// Найденный по номеру заказа вызов: «Заказ №57 · Пекарня», статус, вызов №, когда.
+struct CallVisibilityMatchRow: View {
+    let call: JSON
+
+    private var line: String {
+        var parts: [String] = ["вызов №" + String(call.id ?? 0)]
+        if let shop = call["shop_name"].nonEmptyString { parts.append(shop) }
+        parts.append(Fmt.date(call["created_at"]))
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(call["title"].nonEmptyString ?? ("Вызов №" + String(call.id ?? 0)))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(Brand.text)
+                Text(line)
+                    .font(.caption)
+                    .foregroundColor(Brand.muted)
+            }
+            Spacer(minLength: 6)
+            StatusBadge(call["status_label"].nonEmptyString ?? Fmt.statusLabel(call["status"].string),
+                        color: CallVisibility.statusColor(call["status"].string))
+        }
     }
 }

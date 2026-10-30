@@ -393,7 +393,9 @@ final class ReportsBackfillModel: ObservableObject {
             rounds += 1
             let cursor = after
             do {
-                let r = try await API.shared.post("/api/admin/finance/backfill-charges", body: ["after": cursor])
+                // Порция до 400 заказов — дольше обычных 30 с; повтор безопасен (только pending).
+                let r = try await API.shared.post("/api/admin/finance/backfill-charges", body: ["after": cursor],
+                                                  timeout: 200)
                 total += r["charged"].intValue
                 failed += r["failed"].intValue
                 scanned += r["scanned"].intValue

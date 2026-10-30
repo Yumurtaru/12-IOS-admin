@@ -69,6 +69,10 @@ struct ShopDetailView: View {
             if let t = pendingDeletedText {
                 pendingDeletedText = nil
                 deletedText = t
+            } else {
+                // Закрыли без итога (отмена или «ответ не пришёл»): перечитать карточку —
+                // удаление могло дойти до конца на сервере.
+                Task { await loader.load() }
             }
         }) { pv in
             ShopDeleteSheet(shopId: id, shopName: name, preview: pv.data) { result in

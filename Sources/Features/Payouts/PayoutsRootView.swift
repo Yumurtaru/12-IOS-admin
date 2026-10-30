@@ -262,10 +262,21 @@ struct PayoutsRow: View {
 }
 
 /// Лист «Записать выплату»: магазин, сумма, способ, комментарий → подтверждение с суммой.
+///
+/// POST /api/admin/payouts принимает Idempotency-Key (П-62, А316; плюс adminRepeatGuard
+/// на 30 с). Форма (MoneyOpGuard): ожидание до 200 с, при неизвестном исходе — «Проверить»
+/// по реестру (GET /api/admin/payouts); «Провести ещё раз» — только если выплаты нет, с
+/// подтверждением, тем же ключом и телом.
 struct PayoutsCreateSheet: View {
     let onCreated: () async -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var op = MoneyOpGuard(history: { page in
+        MoneyOpPage.paged(try await API.shared.get("/api/admin/payouts", query: ["page": String(page)]), page: page)
+    })
+    /// Магазин и сумма, ушедшие на сервер (для поиска записи в реестре).
+    @State private var sentShop = ""
+    @State private var sentAmount: Decimal?
     @State private var shops: [JSON] = []
     @State private var shopsState: LoadState = .idle
     @State private var shopId: Int?
@@ -274,8 +285,8 @@ struct PayoutsCreateSheet: View {
     @State private var method = "bank"
     @State private var comment = ""
     @State private var askConfirm = false
-    @State private var busy = false
     @State private var error: String?
+    @State private var foundText: String?
 
     init(onCreated: @escaping () async -> Void) {
         self.onCreated = onCreated
@@ -321,12 +332,14 @@ struct PayoutsCreateSheet: View {
                 Section("Магазин") {
                     shopField
                 }
+                .disabled(op.locked)
                 Section {
                     FormDecimalField("Сумма", text: $amountText)
                     FormPicker("Способ", selection: $method, options: PayoutsMethod.options)
                     FormTextField("Комментарий", text: $comment, prompt: "№ платёжки, период…")
                 }
-                if let p = problem, shopId != nil || !amountText.isEmpty {
+                .disabled(op.locked)
+                if let p = problem, !op.unknown, shopId != nil || !amountText.isEmpty {
                     Section {
                         Text(p).font(.footnote).foregroundColor(Brand.red)
                     }
@@ -334,25 +347,29 @@ struct PayoutsCreateSheet: View {
                 if let e = error {
                     Section { ErrorBanner(message: e) }
                 }
-                Section {
-                    Button {
-                        Haptics.tap()
-                        askConfirm = true
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if busy { ProgressView() } else { Text("Записать выплату").bold() }
-                            Spacer()
+                MoneyOpUnknownSection(guardian: op, whereText: "реестр выплат") { check() }
+                if !op.unknown {
+                    Section {
+                        Button {
+                            guard !op.locked else { return }
+                            Haptics.tap()
+                            askConfirm = true
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if op.busy { ProgressView() } else { Text("Записать выплату").bold() }
+                                Spacer()
+                            }
                         }
+                        .disabled(problem != nil || op.locked)
                     }
-                    .disabled(problem != nil || busy)
                 }
             }
             .navigationTitle("Выплата магазину")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Отмена") { dismiss() }.disabled(busy)
+                    Button(op.unknown ? "Закрыть" : "Отмена") { close() }.disabled(op.busy || op.checking)
                 }
             }
             .confirmationDialog(confirmTitle, isPresented: $askConfirm, titleVisibility: .visible) {
@@ -361,9 +378,27 @@ struct PayoutsCreateSheet: View {
             } message: {
                 Text(confirmMessage)
             }
+            .alert(foundText ?? "", isPresented: foundShown) {
+                Button("OK") { dismiss() }
+            }
             .task { await loadShopsIfNeeded() }
         }
-        .interactiveDismissDisabled(busy)
+        .moneyOpResendDialog(op) { resend() }
+        .interactiveDismissDisabled(op.locked)
+    }
+
+    private var foundShown: Binding<Bool> {
+        Binding(get: { foundText != nil }, set: { if !$0 { foundText = nil } })
+    }
+
+    /// «Отмена»/«Закрыть»: при неизвестном исходе — обновить реестр (запись могла появиться).
+    private func close() {
+        guard !op.busy, !op.checking else { return }
+        if op.unknown {
+            let done = onCreated
+            Task { await done() }
+        }
+        dismiss()
     }
 
     @ViewBuilder
@@ -415,27 +450,58 @@ struct PayoutsCreateSheet: View {
     }
 
     private func submit() {
-        guard problem == nil, !busy, let sid = shopId, let value = amount else { return }
+        guard problem == nil, !op.locked, let sid = shopId, let value = amount else { return }
         let m = method
         let c = trimmedComment
-        let done = onCreated
-        busy = true
+        error = nil
+        sentShop = shopName
+        sentAmount = value
+        Task { @MainActor in
+            handle(await op.send("/api/admin/payouts",
+                                 body: ["shop_id": sid, "amount": value, "method": m, "comment": c]))
+        }
+    }
+
+    private func resend() {
         error = nil
         Task { @MainActor in
-            do {
-                try await API.shared.post("/api/admin/payouts",
-                                          body: ["shop_id": sid, "amount": value, "method": m, "comment": c])
-                Haptics.success()
-                busy = false
-                await done()
-                dismiss()
-            } catch {
-                busy = false
-                if !APIError.isCancellation(error) {
-                    Haptics.error()
-                    self.error = APIError.describe(error)
-                }
+            handle(await op.resend())
+        }
+    }
+
+    private func handle(_ outcome: MoneyOpOutcome) {
+        let done = onCreated
+        switch outcome {
+        case .done:
+            Haptics.success()
+            Task { await done() }
+            dismiss()
+        case .failed(let e):
+            Haptics.error()
+            error = e.message
+        case .unknown(let e):
+            if e != .cancelled { Haptics.error() }
+            // 409 «только что прошло» / «не удалось узнать результат» — сразу смотрим историю.
+            if op.shouldAutoCheck { check() }
+            Task { await done() }
+        case .ignored:
+            break
+        }
+    }
+
+    /// «Проверить»: новая запись «выплачено» этому магазину на эту сумму.
+    private func check() {
+        guard let v = sentAmount else { return }
+        let shop = sentShop
+        let done = onCreated
+        Task { @MainActor in
+            let found = await op.check { row in
+                MoneyOp.sameAmount(row["amount"], v) && (shop.isEmpty || row["shop"].stringValue == shop)
             }
+            guard let row = found else { return }
+            Haptics.success()
+            Task { await done() }
+            foundText = "Выплата записана (найдена в реестре, №" + row["id"].stringValue + ")."
         }
     }
 }

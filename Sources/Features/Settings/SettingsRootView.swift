@@ -7,6 +7,10 @@ import SwiftUI
 /// POST /api/admin/settings {ключ: значение, …} → {saved, changed:[ключи]}
 ///      422 → errors {ключ: причина}; сохранение атомарное (ошибка в одном поле — не сохраняется ничего).
 ///      Секрет: маска или пусто — «не трогать», «__CLEAR__» — стереть.
+///      Реквизиты, ключи ЮKassa и сервисов, ссылки на приложения, установщик и «обязательное»
+///      обновление кассы, автоодобрение (этап L, dbConfirm) — только с `password` (или `code`
+///      при 2FA): без него 403 `errors.need = "password" | "2fa"` (неверный — то же; "setup" —
+///      подтвердить нечем). Лист подтверждения спрашивает пароль/код и повторяет с ним.
 ///
 /// Отправляем ТОЛЬКО изменённые ключи (сервер пропускает отсутствующие) — после
 /// подтверждения со списком «было → стало».
@@ -47,7 +51,7 @@ struct SettingsRootView: View {
             }
         }
         .sheet(isPresented: $showReview) {
-            SettingsReviewSheet(changes: changes, onSave: { try await save() })
+            SettingsReviewSheet(changes: changes, onSave: { extra in try await save(extra) })
         }
         .task {
             await loader.loadIfNeeded()
@@ -236,13 +240,15 @@ struct SettingsRootView: View {
 
     // MARK: - Сохранение
 
-    /// POST только изменённых ключей → текст итога для листа.
+    /// POST только изменённых ключей → текст итога для листа. `extra` — подтверждение
+    /// (`password` или `code`), если сервер его попросил.
     /// 422 — подсветить поля и пробросить ошибку в лист.
-    private func save() async throws -> String {
+    private func save(_ extra: [String: Any?]) async throws -> String {
         let list = changes
         guard !list.isEmpty else { return "Изменений нет." }
         var body: [String: Any?] = [:]
         for c in list { body[c.key] = c.send }
+        for (k, v) in extra { body[k] = v }
         do {
             let res = try await API.shared.post("/api/admin/settings", body: body)
             let changedKeys = res["changed"].array.compactMap { $0.string }
@@ -485,17 +491,46 @@ struct SettingsSecretRow: View {
     }
 }
 
-/// Подтверждение сохранения: список «было → стало».
+/// Подтверждение сохранения: список «было → стало». Если сервер попросил подтвердить
+/// опасную правку (403 `errors.need` = "password" | "2fa"), лист показывает поле пароля
+/// или кода и повторяет сохранение с ним.
 struct SettingsReviewSheet: View {
     let changes: [SettingsChange]
-    let onSave: () async throws -> String
+    /// Сохранение; аргумент — подтверждение (`password` / `code`) или пусто.
+    let onSave: ([String: Any?]) async throws -> String
     @Environment(\.dismiss) private var dismiss
     /// Итог сохранения (после успеха лист показывает его вместо списка).
     @State private var doneText: String?
+    /// Что просит сервер: "password" или "2fa" (nil — ничего).
+    @State private var need: String?
+    @State private var secret = ""
+    /// Текст сервера к запросу подтверждения (неверный пароль, код уже использован …).
+    @State private var needText: String?
 
-    init(changes: [SettingsChange], onSave: @escaping () async throws -> String) {
+    init(changes: [SettingsChange], onSave: @escaping ([String: Any?]) async throws -> String) {
         self.changes = changes
         self.onSave = onSave
+    }
+
+    /// Сервер просит пароль или код — запомнить и не показывать ошибку алертом.
+    private func askedConfirm(_ error: Error) -> Bool {
+        guard let e = error as? APIError, e.status == 403,
+              let n = e.details["need"].string, n == "password" || n == "2fa" else { return false }
+        need = n
+        secret = ""
+        needText = e.message
+        Haptics.warning()
+        return true
+    }
+
+    private func attempt(_ extra: [String: Any?]) async throws {
+        do {
+            let text = try await onSave(extra)
+            doneText = text
+        } catch {
+            if askedConfirm(error) { return }
+            throw error
+        }
     }
 
     private var title: String {
@@ -550,15 +585,53 @@ struct SettingsReviewSheet: View {
             } footer: {
                 Text("Настройки действуют сразу для всей площадки. В журнал попадут названия изменённых настроек (без значений).")
             }
-            Section {
-                ActionButton(title, systemImage: "checkmark", style: .prominent, fullWidth: true) {
-                    let text = try await onSave()
-                    doneText = text
+            if let n = need {
+                confirmSection(n)
+            } else {
+                Section {
+                    ActionButton(title, systemImage: "checkmark", style: .prominent, fullWidth: true) {
+                        try await attempt([:])
+                    }
+                    .listRowBackground(Color.clear)
                 }
-                .listRowBackground(Color.clear)
             }
         }
         .listStyle(.insetGrouped)
+    }
+
+    @ViewBuilder
+    private func confirmSection(_ n: String) -> some View {
+        let useCode = n == "2fa"
+        Section {
+            if let t = needText {
+                Text(t)
+                    .font(.footnote)
+                    .foregroundColor(Brand.amber)
+            }
+            if useCode {
+                TextField("000000", text: $secret)
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+                    .font(.title3.monospacedDigit())
+            } else {
+                SecureField("Пароль", text: $secret)
+                    .textContentType(.password)
+            }
+        } header: {
+            Text(useCode ? "Код двухфакторной аутентификации" : "Ваш пароль администратора")
+        } footer: {
+            Text(useCode ? "Реквизиты, ключи и ссылки площадки сервер меняет только с кодом из приложения-аутентификатора. Один код — одно сохранение."
+                         : "Реквизиты, ключи и ссылки площадки сервер меняет только после ввода пароля администратора.")
+        }
+        Section {
+            ActionButton("Подтвердить и сохранить", systemImage: "lock.open", style: .prominent, fullWidth: true) {
+                let v = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !v.isEmpty else { return }
+                try await attempt(useCode ? ["code": v] : ["password": v])
+            }
+            .disabled(secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .listRowBackground(Color.clear)
+        }
     }
 }
 

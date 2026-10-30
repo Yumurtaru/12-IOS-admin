@@ -158,7 +158,8 @@ struct WalletsUserWalletView: View {
         .sheet(isPresented: $showCorrect) {
             WalletsCorrectSheet(userId: userId, userName: user["name"].stringValue,
                                 balance: user["balance"].decimal) { text in
-                notice = text
+                // Пустой текст — только обновить (лист закрыли при неизвестном исходе).
+                if !text.isEmpty { notice = text }
                 await afterChange()
             }
         }
@@ -287,25 +288,39 @@ struct WalletsTxRow: View {
 ///
 /// Направление выбирается переключателем, сумма вводится без знака — так
 /// «-19» и «19» нельзя перепутать. Перед отправкой — подтверждение с суммой.
+///
+/// Ручка принимает Idempotency-Key (П-62, А316; плюс adminRepeatGuard на 20 с и push
+/// клиенту внутри запроса — ответ может задержаться). Форма (MoneyOpGuard): ожидание до
+/// 200 с, при неизвестном исходе — «Проверить» по журналу кошелька (GET
+/// /api/admin/user-wallets/{id} → transactions, тип correction); «Провести ещё раз» — только
+/// если операции нет, с подтверждением, тем же ключом и телом.
 struct WalletsCorrectSheet: View {
     let userId: Int
     let userName: String
     let balance: Decimal?
+    /// Итог для показа; пустая строка — только обновить экран.
     let onDone: (String) async -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var op: MoneyOpGuard
     @State private var direction = "credit"
     @State private var amountText = ""
     @State private var reason = ""
     @State private var askConfirm = false
-    @State private var busy = false
     @State private var error: String?
+    /// Сумма со знаком, ушедшая на сервер.
+    @State private var sentValue: Decimal?
 
     init(userId: Int, userName: String, balance: Decimal?, onDone: @escaping (String) async -> Void) {
         self.userId = userId
         self.userName = userName
         self.balance = balance
         self.onDone = onDone
+        let path = "/api/admin/user-wallets/" + String(userId)
+        // Журнал без страниц: последние 200 операций одним ответом.
+        _op = StateObject(wrappedValue: MoneyOpGuard(history: { _ in
+            MoneyOpPage(rows: try await API.shared.get(path)["transactions"].array, more: false)
+        }))
     }
 
     private var isCredit: Bool { direction == "credit" }
@@ -372,7 +387,8 @@ struct WalletsCorrectSheet: View {
                 } footer: {
                     Text("Баланс сейчас: " + Fmt.money(balance) + ". Операция попадёт в журнал кошелька и в журнал действий администратора. В минус кошелёк клиента уйти не может.")
                 }
-                if let p = problem, !amountText.isEmpty || !reason.isEmpty {
+                .disabled(op.locked)
+                if let p = problem, !op.unknown, !amountText.isEmpty || !reason.isEmpty {
                     Section {
                         Text(p).font(.footnote).foregroundColor(Brand.red)
                     }
@@ -380,25 +396,29 @@ struct WalletsCorrectSheet: View {
                 if let e = error {
                     Section { ErrorBanner(message: e) }
                 }
-                Section {
-                    Button {
-                        Haptics.tap()
-                        askConfirm = true
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if busy { ProgressView() } else { Text(submitTitle).bold() }
-                            Spacer()
+                MoneyOpUnknownSection(guardian: op, whereText: "журнал кошелька") { check() }
+                if !op.unknown {
+                    Section {
+                        Button {
+                            guard !op.locked else { return }
+                            Haptics.tap()
+                            askConfirm = true
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if op.busy { ProgressView() } else { Text(submitTitle).bold() }
+                                Spacer()
+                            }
                         }
+                        .disabled(problem != nil || op.locked)
                     }
-                    .disabled(problem != nil || busy)
                 }
             }
             .navigationTitle("Изменить баланс")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Отмена") { dismiss() }.disabled(busy)
+                    Button(op.unknown ? "Закрыть" : "Отмена") { close() }.disabled(op.busy || op.checking)
                 }
             }
             .confirmationDialog(confirmTitle, isPresented: $askConfirm, titleVisibility: .visible) {
@@ -410,7 +430,8 @@ struct WalletsCorrectSheet: View {
                 Text(confirmMessage)
             }
         }
-        .interactiveDismissDisabled(busy)
+        .moneyOpResendDialog(op) { resend() }
+        .interactiveDismissDisabled(op.locked)
     }
 
     private var confirmButtonTitle: String {
@@ -426,30 +447,71 @@ struct WalletsCorrectSheet: View {
         isCredit ? "Начислить" : "Списать"
     }
 
+    /// «Отмена»/«Закрыть»: при неизвестном исходе — обновить кошелёк (баланс мог измениться).
+    private func close() {
+        guard !op.busy, !op.checking else { return }
+        if op.unknown {
+            let done = onDone
+            Task { await done("") }
+        }
+        dismiss()
+    }
+
     private func submit() {
-        guard problem == nil, !busy else { return }
+        guard problem == nil, !op.locked else { return }
         let value = signed
         let text = trimmedReason
-        let id = userId
-        let done = onDone
-        busy = true
+        error = nil
+        sentValue = value
+        let path = "/api/admin/user-wallets/" + String(userId) + "/correct"
+        Task { @MainActor in
+            handle(await op.send(path, body: ["amount": value, "description": text]))
+        }
+    }
+
+    private func resend() {
         error = nil
         Task { @MainActor in
-            do {
-                let r = try await API.shared.post("/api/admin/user-wallets/\(id)/correct",
-                                                  body: ["amount": value, "description": text])
-                Haptics.success()
-                busy = false
-                dismiss()
-                let applied = r["applied"].decimal ?? value
-                await done("Готово: " + Fmt.moneySigned(applied) + ". Баланс: " + Fmt.money(r["balance"]))
-            } catch {
-                busy = false
-                if !APIError.isCancellation(error) {
-                    Haptics.error()
-                    self.error = APIError.describe(error)
-                }
+            handle(await op.resend())
+        }
+    }
+
+    private func handle(_ outcome: MoneyOpOutcome) {
+        let done = onDone
+        switch outcome {
+        case .done(let res):
+            Haptics.success()
+            let r = res.data
+            let applied = r["applied"].decimal ?? (sentValue ?? 0)
+            dismiss()
+            let text = "Готово: " + Fmt.moneySigned(applied) + ". Баланс: " + Fmt.money(r["balance"])
+            Task { await done(text) }
+        case .failed(let e):
+            Haptics.error()
+            error = e.message
+        case .unknown(let e):
+            if e != .cancelled { Haptics.error() }
+            // 409 «только что прошло» / «не удалось узнать результат» — сразу смотрим историю.
+            if op.shouldAutoCheck { check() }
+            Task { await done("") }
+        case .ignored:
+            break
+        }
+    }
+
+    /// «Проверить»: новая строка correction с этой суммой в журнале кошелька.
+    private func check() {
+        guard let v = sentValue else { return }
+        let done = onDone
+        Task { @MainActor in
+            let found = await op.check { row in
+                row["type"].stringValue == "correction" && MoneyOp.sameAmount(row["amount"], v)
             }
+            guard let row = found else { return }
+            Haptics.success()
+            dismiss()
+            let text = "Операция прошла (найдена в журнале): " + Fmt.moneySigned(v) + ". Баланс после: " + Fmt.money(row["balance_after"])
+            Task { await done(text) }
         }
     }
 }
