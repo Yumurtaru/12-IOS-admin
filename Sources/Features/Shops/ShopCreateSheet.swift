@@ -9,6 +9,12 @@ import SwiftUI
 /// password?, generate_password?, reset_password?, publish_now?,
 /// commission_percent?, send_email?} c ключом повтора Idempotency-Key.
 /// Ответ — карточка результата (ShopCredentialsSections): пароль один раз.
+///
+/// Ключ и тело пишутся на телефон (MoneyOpStore, `shop_create`) до каждой отправки и
+/// снимаются успехом или окончательным отказом: если iOS выгрузит приложение, пока запрос
+/// в пути, форма при следующем открытии поднимет поля и тот же ключ — «Создать» повторит
+/// запрос, а не заведёт вторую организацию. Пароль, введённый вручную, на телефоне не
+/// хранится (как и в ShopCredentials): его просим ввести тот же.
 struct ShopCreateSheet: View {
     /// Организация создана (или могла быть создана) — обновить список.
     let onCreated: () -> Void
@@ -43,7 +49,14 @@ struct ShopCreateSheet: View {
     /// обрыв связи/таймаут — повтор уходит с тем же ключом, и сервер вернёт
     /// прежний результат вместо второй организации.
     @State private var idemKey: String?
+    /// В этой форме уже был неизвестный исход (обрыв, таймаут, 5xx, «не удалось узнать результат»):
+    /// организация могла быть создана. Сбрасывается окончательным ответом или успехом.
+    @State private var hadUnknown = false
     @State private var result: ShopCredentials?
+    /// Запись с телефона уже смотрели (onAppear бывает не один раз).
+    @State private var restoreChecked = false
+    /// Подтверждение «Забыть прошлую попытку?».
+    @State private var askForget = false
 
     init(onCreated: @escaping () -> Void, onOpenShop: @escaping (Int) -> Void) {
         self.onCreated = onCreated
@@ -105,6 +118,13 @@ struct ShopCreateSheet: View {
                     fieldErrors["city_id"] = nil
                 }
             }
+            .alert("Забыть прошлую попытку?", isPresented: $askForget) {
+                Button("Забыть", role: .destructive) { forgetAttempt() }
+                Button("Отмена", role: .cancel) {}
+            } message: {
+                Text("Следующее «Создать» уйдёт с новым ключом. Если прошлая попытка всё-таки создала организацию, появится вторая — сначала проверьте список организаций.")
+            }
+            .onAppear { restorePending() }
         }
         // Пароль виден только здесь: случайный свайп вниз не должен его потерять.
         .interactiveDismissDisabled(busy || result?.password != nil)
@@ -126,6 +146,13 @@ struct ShopCreateSheet: View {
                         openShop(sid)
                     } label: {
                         Label("Открыть существующую организацию", systemImage: "building.2")
+                    }
+                }
+                if hadUnknown && idemKey != nil && !busy {
+                    Button(role: .destructive) {
+                        askForget = true
+                    } label: {
+                        Label("Забыть прошлую попытку", systemImage: "arrow.uturn.backward")
                     }
                 }
             }
@@ -329,12 +356,15 @@ struct ShopCreateSheet: View {
             // поле idempotency_key (apiIdemKey; при обоих действует заголовок).
             "idempotency_key": key,
         ]
+        savePending(body, key: key)
         busy = true
         Task { @MainActor in
             do {
-                let res = try await API.shared.postIdempotent("/api/admin/shops/create", body: body, key: key)
+                let res = try await API.shared.postIdempotent(ShopCreateSheet.createPath, body: body, key: key)
                 busy = false
                 idemKey = nil
+                hadUnknown = false
+                MoneyOpStore.remove(MoneyOpStore.shopCreate)
                 fieldErrors = [:]
                 Haptics.success()
                 result = ShopCredentials.fromCreate(res.data)
@@ -342,26 +372,142 @@ struct ShopCreateSheet: View {
             } catch {
                 busy = false
                 // Отмена: запрос мог дойти до сервера — ключ оставляем.
-                if APIError.isCancellation(error) { return }
+                if APIError.isCancellation(error) {
+                    hadUnknown = true
+                    self.error = "Запрос прервался — организация могла быть создана. Проверьте список организаций; «Создать» повторит тот же запрос с тем же ключом."
+                    return
+                }
                 Haptics.error()
                 let e = (error as? APIError) ?? API.mapTransport(error)
-                if ShopCreateSheet.isDefinitive(e) { idemKey = nil }
+                let wasUnknown = hadUnknown
+                if ShopCreateSheet.isDefinitive(e) && wasUnknown && !ShopCreateSheet.isValidation(e) {
+                    // Отказ после неизвестного исхода (422 «ключ уже использован», 401/403/404,
+                    // 409) не говорит, создала ли организацию прошлая попытка: ключ и запись
+                    // остаются, выход — «Забыть прошлую попытку» после сверки списка.
+                    applyAfterUnknown(e)
+                    return
+                }
+                if ShopCreateSheet.isDefinitive(e) {
+                    idemKey = nil
+                    hadUnknown = false
+                    MoneyOpStore.remove(MoneyOpStore.shopCreate)
+                } else if !MoneyOp.isIdemUnavailable(e) {
+                    hadUnknown = true
+                } else if !hadUnknown {
+                    // 503 «защита недоступна» без прошлого неизвестного исхода: организация
+                    // не создана, хранить на телефоне нечего (ключ в форме остаётся).
+                    MoneyOpStore.remove(MoneyOpStore.shopCreate)
+                }
                 apply(e)
             }
         }
     }
 
+    static let createPath = "/api/admin/shops/create"
+
+    /// До отправки — на телефон: ключ и тело без пароля. Первая отправка этим ключом — из
+    /// прежней записи (сервер помнит ключ сутки с неё).
+    private func savePending(_ body: [String: Any?], key: String) {
+        var stored = body
+        stored.removeValue(forKey: "password")
+        guard let data = try? JSONBody.data(stored) else { return }
+        let now = Date()
+        let prev = MoneyOpStore.load(MoneyOpStore.shopCreate)
+        let first = prev?.key == key ? (prev?.sentAt ?? now) : now
+        // Отметка истории и ожидание перед повтором здесь не нужны: истории нет, повтор — «Создать».
+        MoneyOpStore.save(MoneyOpPending(path: ShopCreateSheet.createPath, key: key, body: data, baseline: nil,
+                                         sentAt: first, lastSentAt: now, resendAllowed: true, resendWait: 30,
+                                         extra: ["city_name": cityName ?? ""]),
+                          scope: MoneyOpStore.shopCreate)
+    }
+
+    /// Прошлая отправка осталась без ответа (приложение выгружено, форму закрыли при
+    /// неизвестном исходе): поля — как ушли, тот же ключ, предупреждение и обновить список.
+    private func restorePending() {
+        guard !restoreChecked else { return }
+        restoreChecked = true
+        guard result == nil, idemKey == nil,
+              let p = MoneyOpStore.load(MoneyOpStore.shopCreate), p.path == ShopCreateSheet.createPath,
+              let b = JSON.parse(p.body), b.isObject else { return }
+        name = b["name"].stringValue
+        let t = b["type"].stringValue
+        if ShopCreateSheet.typeOptions.contains(where: { $0.value == t }) { type = t }
+        cityId = b["city_id"].int
+        let savedCity = p.extra["city_name"] ?? ""
+        if !savedCity.isEmpty {
+            cityName = savedCity
+        } else if let cid = cityId {
+            cityName = "Город #" + String(cid)
+        }
+        address = b["address"].stringValue
+        phone = b["phone"].stringValue
+        inn = b["inn"].stringValue
+        ownerName = b["owner_name"].stringValue
+        ownerPhone = b["owner_phone"].stringValue
+        ownerEmail = b["owner_email"].stringValue
+        let own = !b["generate_password"].boolValue
+        pwMode = own ? "own" : "gen"
+        password = ""
+        resetPassword = b["reset_password"].boolValue
+        commission = b["commission_percent"].string ?? "0"
+        publishNow = b["publish_now"].boolValue
+        sendEmail = b["send_email"].boolValue
+        idemKey = p.key
+        hadUnknown = true
+        var text = "Прошлая попытка создать организацию (отправлена в " + MoneyOp.timeText(p.sentAt)
+            + ") осталась без ответа сервера — организация могла быть создана. Проверьте список организаций. Если её там нет — «Создать» отправит тот же запрос с тем же ключом, вторая организация не появится."
+        if own {
+            text += "\nПароль на телефоне не хранится — введите тот же, что и в прошлый раз: с другим паролем сервер сочтёт запрос другим."
+        }
+        error = text
+        onCreated()
+    }
+
+    /// 422 с ошибками полей: сервер проверил данные и ничего не создавал.
+    static func isValidation(_ e: APIError) -> Bool {
+        e.status == 422 && !e.fieldErrors.isEmpty
+    }
+
+    /// Окончательный отказ на повтор после неизвестного исхода: ключ не сбрасываем.
+    private func applyAfterUnknown(_ e: APIError) {
+        existingShopId = e.status == 409 ? e.details["existing_shop_id"].int : nil
+        let head = MoneyOp.idemReply(e) == .keyReused
+            ? "Под этим ключом сервер уже сохранил ответ — организация, скорее всего, создана."
+            : "Сервер ответил: «" + e.message + "». Прошлая попытка могла создать организацию."
+        error = head + " Проверьте список организаций. Если её там нет — «Забыть прошлую попытку» и создайте заново."
+        onCreated()
+    }
+
+    /// «Забыть прошлую попытку» (после подтверждения): следующий «Создать» — с новым ключом.
+    private func forgetAttempt() {
+        guard !busy else { return }
+        idemKey = nil
+        hadUnknown = false
+        error = nil
+        existingShopId = nil
+        MoneyOpStore.remove(MoneyOpStore.shopCreate)
+    }
+
     /// Окончательный ли ответ (тогда следующий «Создать» — с новым ключом).
-    /// Нет — сеть, 5xx, 429 и 409 «запрос уже выполняется»: исход неизвестен,
-    /// повтор тем же ключом не создаст вторую организацию.
+    /// Нет — сеть, 5xx, 429, 409 «запрос уже выполняется» и 409 `idempotency_unknown_outcome`
+    /// («не удалось узнать результат»): исход неизвестен, повтор тем же ключом не создаст
+    /// вторую организацию, а новый ключ мог бы.
     static func isDefinitive(_ e: APIError) -> Bool {
         let s = e.status
         guard s >= 400 && s < 500, s != 429 else { return false }
         if s == 409 && e.message.contains("уже выполняется") { return false }
+        if s == 409 && MoneyOp.idemReply(e) == .unknownOutcome { return false }
         return true
     }
 
     private func apply(_ e: APIError) {
+        if MoneyOp.isIdemUnavailable(e) {
+            // 503 idempotency_unavailable (строгий режим А618): организация НЕ создана. Ключ
+            // остаётся (isDefinitive для 5xx — false), автоповтора нет: «Создать» — через минуту.
+            error = MoneyOp.unavailableText
+                + (hadUnknown ? "\nПрошлая попытка могла пройти — проверьте список организаций." : "")
+            return
+        }
         let fields = e.fieldErrors
         if e.status == 422 && fields.isEmpty && e.message.contains("Ключ повтора") {
             // idempotency_key_reused: этим ключом уже ушла другая версия формы (до
@@ -387,7 +533,14 @@ struct ShopCreateSheet: View {
             // у разных аккаунтов, аккаунт заблокирован, создание уже идёт.
             fieldErrors = API.fieldErrors(details).filter { ShopCreateSheet.inlineFields.contains($0.key) }
             existingShopId = status == 409 ? details["existing_shop_id"].int : nil
-            error = ShopCreateSheet.isDefinitive(e) ? m : m + "\nНажмите «Создать» ещё раз — повтор не создаст вторую организацию."
+            if status == 409 && MoneyOp.idemReply(e) == .unknownOutcome {
+                // idempotency_unknown_outcome: повтор тем же ключом даст тот же ответ — отправлять
+                // ещё раз бессмысленно, смотрим список (ключ не сбрасывается, см. isDefinitive).
+                error = m + "\nОрганизация могла быть создана — проверьте список организаций."
+                onCreated()
+            } else {
+                error = ShopCreateSheet.isDefinitive(e) ? m : m + "\nНажмите «Создать» ещё раз — повтор не создаст вторую организацию."
+            }
         case .offline, .badResponse:
             error = e.message + "\nНажмите «Создать» ещё раз — повтор не создаст вторую организацию."
         default:

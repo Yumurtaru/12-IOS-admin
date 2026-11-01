@@ -271,7 +271,7 @@ struct PayoutsCreateSheet: View {
     let onCreated: () async -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var op = MoneyOpGuard(history: { page in
+    @StateObject private var op = MoneyOpGuard(scope: MoneyOpStore.payout, history: { page in
         MoneyOpPage.paged(try await API.shared.get("/api/admin/payouts", query: ["page": String(page)]), page: page)
     })
     /// Магазин и сумма, ушедшие на сервер (для поиска записи в реестре).
@@ -382,9 +382,27 @@ struct PayoutsCreateSheet: View {
                 Button("OK") { dismiss() }
             }
             .task { await loadShopsIfNeeded() }
+            .onAppear { restorePending() }
         }
         .moneyOpResendDialog(op) { resend() }
         .interactiveDismissDisabled(op.locked)
+    }
+
+    /// Выплата с прошлого открытия осталась без ответа: поля — как ушли, сразу «Проверить».
+    private func restorePending() {
+        guard let r = op.takeRestored() else { return }
+        let b = r.body
+        let shop = r.extra["shop"] ?? ""
+        if let sid = b["shop_id"].int {
+            shopId = sid
+            shopName = shop.isEmpty ? "Магазин #" + String(sid) : shop
+        }
+        amountText = b["amount"].stringValue
+        method = b["method"].string ?? method
+        comment = b["comment"].stringValue
+        sentShop = shop
+        sentAmount = b["amount"].decimal
+        check()
     }
 
     private var foundShown: Binding<Bool> {
@@ -454,11 +472,13 @@ struct PayoutsCreateSheet: View {
         let m = method
         let c = trimmedComment
         error = nil
-        sentShop = shopName
+        let label = shopName
+        sentShop = label
         sentAmount = value
         Task { @MainActor in
             handle(await op.send("/api/admin/payouts",
-                                 body: ["shop_id": sid, "amount": value, "method": m, "comment": c]))
+                                 body: ["shop_id": sid, "amount": value, "method": m, "comment": c],
+                                 extra: ["shop": label]))
         }
     }
 
@@ -472,10 +492,11 @@ struct PayoutsCreateSheet: View {
     private func handle(_ outcome: MoneyOpOutcome) {
         let done = onCreated
         switch outcome {
-        case .done:
+        case .done(let r):
             Haptics.success()
             Task { await done() }
-            dismiss()
+            let prefix = MoneyOp.replayPrefix(r)
+            if prefix.isEmpty { dismiss() } else { foundText = prefix + "Выплата записана." }
         case .failed(let e):
             Haptics.error()
             error = e.message

@@ -19,7 +19,7 @@ struct ShopWalletTxRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(ShopsLabels.walletType(tx["type"].string))
+                Text(ShopsLabels.walletType(tx["type"].string, amount: amount))
                     .font(.subheadline.weight(.medium))
                 Text(subtitle)
                     .font(.caption)
@@ -121,7 +121,7 @@ struct ShopTopupSheet: View {
         self.shopName = shopName
         self.onDone = onDone
         let path = "/api/admin/shops/" + String(shopId) + "/wallet"
-        _op = StateObject(wrappedValue: MoneyOpGuard(history: { page in
+        _op = StateObject(wrappedValue: MoneyOpGuard(scope: MoneyOpStore.shopTopup(shopId), history: { page in
             MoneyOpPage.paged(try await API.shared.get(path, query: ["page": String(page)]), page: page)
         }))
     }
@@ -200,10 +200,21 @@ struct ShopTopupSheet: View {
             .alert(resultText ?? "", isPresented: resultShown) {
                 Button("OK") { dismiss() }
             }
+            .onAppear { restorePending() }
         }
         .moneyOpResendDialog(op) { resend() }
         // Пока идёт запрос или исход неизвестен, свайпом не закрыть: только «Закрыть».
         .interactiveDismissDisabled(op.locked)
+    }
+
+    /// Операция с прошлого открытия осталась без ответа: поля — как ушли, сразу «Проверить».
+    private func restorePending() {
+        guard let r = op.takeRestored() else { return }
+        let a = r.body["amount"].decimal
+        amountText = r.body["amount"].stringValue
+        comment = r.body["comment"].stringValue
+        sentAmount = a
+        check()
     }
 
     private var resultShown: Binding<Bool> {
@@ -245,7 +256,7 @@ struct ShopTopupSheet: View {
             let res = r.data
             let done = onDone
             Task { await done(res) }
-            resultText = "Готово. Баланс: " + Fmt.money(res["balance"])
+            resultText = MoneyOp.replayPrefix(r) + "Готово. Баланс: " + Fmt.money(res["balance"])
         case .failed(let e):
             Haptics.error()
             error = e.message

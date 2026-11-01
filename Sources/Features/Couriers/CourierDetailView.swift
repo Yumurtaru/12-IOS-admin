@@ -1049,13 +1049,13 @@ struct CourierAdjustSheet: View {
         self.onApplied = onApplied
         _shopChoice = State(initialValue: list.first?.id ?? 0)
         let uid = courierId
-        _op = StateObject(wrappedValue: MoneyOpGuard(history: { page in
+        _op = StateObject(wrappedValue: MoneyOpGuard(scope: MoneyOpStore.courierAdjust(courierId), history: { page in
             let d = try await API.shared.get("/api/admin/audit", query: [
                 "entity": "pool_courier", "action": "adjust", "q": String(uid), "page": String(page),
             ])
             let all = MoneyOpPage.paged(d, page: page)
             // id отметки и границы страниц — по всем строкам; совпадение ищем только у этого курьера.
-            return MoneyOpPage(rows: all.rows, more: all.more)
+            return MoneyOpPage(rows: all.rows, more: all.more, idem: all.idem)
         }))
     }
 
@@ -1147,6 +1147,7 @@ struct CourierAdjustSheet: View {
             .alert(foundText ?? "", isPresented: foundShown) {
                 Button("OK") { dismiss() }
             }
+            .onAppear { restorePending() }
         }
         .moneyOpResendDialog(op) { resend() }
         .interactiveDismissDisabled(op.locked)
@@ -1154,6 +1155,32 @@ struct CourierAdjustSheet: View {
 
     private var foundShown: Binding<Bool> {
         Binding(get: { foundText != nil }, set: { if !$0 { foundText = nil } })
+    }
+
+    /// Поправка с прошлого открытия осталась без ответа: поля — как ушли, сразу «Проверить».
+    /// Сумма в теле — строка со знаком; у «Комиссия получена» — без знака (минус ставит сервер).
+    private func restorePending() {
+        guard let r = op.takeRestored() else { return }
+        let b = r.body
+        let k = b["kind"].string ?? "adjustment"
+        let sid = b["shop_id"].intValue
+        let signed = b["amount"].decimal ?? 0
+        let plain = signed < 0 ? -signed : signed
+        kind = k
+        if k == "adjustment" {
+            if shops.contains(where: { $0.id == sid }) {
+                shopChoice = sid
+            } else {
+                shopChoice = -1
+                otherShop = String(sid)
+            }
+            direction = signed < 0 ? -1 : 1
+        }
+        amount = NSDecimalNumber(decimal: plain).stringValue
+        note = b["note"].stringValue
+        sentShop = k == "platform_paid" ? 0 : sid
+        sentAmount = k == "platform_paid" ? -plain : signed
+        check()
     }
 
     /// «Отмена»/«Закрыть»: при неизвестном исходе — перечитать карточку (сальдо могло измениться).
@@ -1232,7 +1259,8 @@ struct CourierAdjustSheet: View {
             Haptics.success()
             let res = r.data
             Task { await done(res) }
-            dismiss()
+            let prefix = MoneyOp.replayPrefix(r)
+            if prefix.isEmpty { dismiss() } else { foundText = prefix + "Поправка записана." }
         case .failed(let e):
             Haptics.error()
             error = e.message

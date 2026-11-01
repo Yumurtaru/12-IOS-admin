@@ -112,6 +112,13 @@ enum ShopsLabels {
         return registrationAutoApproved(reg) ? base + " · автоматически" : base
     }
 
+    /// Тип движения с учётом знака суммы: ручное списание сервер пишет в журнал тем же типом
+    /// `topup` (описание «Ручное зачисление: списание — …», А819) — минус не подписываем «Пополнение».
+    static func walletType(_ t: String?, amount: Decimal) -> String {
+        if t == "topup" && amount < 0 { return "Ручное списание" }
+        return walletType(t)
+    }
+
     /// Тип движения по кошельку магазина (как в admin.js WTX).
     static func walletType(_ t: String?) -> String {
         switch t ?? "" {

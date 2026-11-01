@@ -16,6 +16,9 @@ struct APIResult {
     let raw: JSON
     /// HTTP-код ответа.
     let status: Int
+    /// Заголовок `Idempotency-Replayed: true` (А618): сервер не выполнял запрос второй раз,
+    /// а отдал сохранённый ответ первой попытки. Нет заголовка (старый сервер) — false.
+    var replayed: Bool = false
 }
 
 /// Ошибка запроса с русским текстом для показа человеку.
@@ -52,7 +55,11 @@ enum APIError: Error, LocalizedError, Equatable {
         case .validation(let m, let fields):
             let parts = fields.keys.sorted().compactMap { fields[$0] }
             if parts.isEmpty { return m }
-            let joined = parts.joined(separator: "\n")
+            // А819: сервер часто кладёт тот же текст и в error, и в errors.<поле> («Укажите
+            // решение…») — второй раз его не повторяем.
+            let extra = parts.filter { !m.contains($0) }
+            if extra.isEmpty { return m }
+            let joined = extra.joined(separator: "\n")
             if m.isEmpty || m == "Проверьте правильность заполнения" { return joined }
             return m + "\n" + joined
         case .server(_, let m, _): return m
@@ -216,6 +223,15 @@ final class API {
         try await request("POST", path, body: body, headers: ["Idempotency-Key": key], timeout: timeout)
     }
 
+    /// То же с готовыми байтами тела (`JSONBody.data`, с полем `idempotency_key`): повтор
+    /// денежной операции, в том числе после перезапуска приложения, уходит байт в байт как
+    /// первая отправка — отпечаток тела на сервере совпадёт.
+    @discardableResult
+    func postKeyed(_ path: String, bodyData: Data, key: String,
+                   timeout: TimeInterval? = nil) async throws -> APIResult {
+        try await requestData("POST", path, bodyData: bodyData, headers: ["Idempotency-Key": key], timeout: timeout)
+    }
+
     // MARK: - Общий запрос
 
     /// Любой запрос. `auth: false` — без токена и без попытки обновить его (вход).
@@ -226,6 +242,14 @@ final class API {
                  body: [String: Any?]? = nil, auth: Bool = true,
                  headers: [String: String] = [:], timeout: TimeInterval? = nil) async throws -> APIResult {
         let bodyData: Data? = try body.map { try JSONBody.data($0) }
+        return try await requestData(method, path, query: query, bodyData: bodyData, auth: auth,
+                                     headers: headers, timeout: timeout)
+    }
+
+    /// Любой запрос с готовыми байтами JSON-тела (nil — без тела).
+    func requestData(_ method: String, _ path: String, query: [String: String?] = [:],
+                     bodyData: Data?, auth: Bool = true,
+                     headers: [String: String] = [:], timeout: TimeInterval? = nil) async throws -> APIResult {
         let build: () throws -> URLRequest = {
             var req = try self.makeRequest(method, path, query: query, auth: auth, contentType: bodyData == nil ? nil : "application/json")
             for (name, value) in headers { req.setValue(value, forHTTPHeaderField: name) }
@@ -358,7 +382,9 @@ final class API {
             // Ответ 200 не-JSON (страница Wi-Fi-авторизации, HTML прокси) успехом не считаем:
             // раньше он проходил как «готово» с пустыми данными, и проверка ниже не срабатывала.
             if env.ok && json != nil && (200..<300).contains(status) {
-                return APIResult(data: env.data, meta: env.meta, raw: json ?? .null, status: status)
+                let replayHeader = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Idempotency-Replayed")
+                let replayed = replayHeader?.trimmingCharacters(in: .whitespaces).lowercased() == "true"
+                return APIResult(data: env.data, meta: env.meta, raw: json ?? .null, status: status, replayed: replayed)
             }
             if status == 401 && auth && attempt == 1 {
                 if try await refreshAfter401() { continue }
@@ -457,6 +483,13 @@ final class API {
             if details.isNull { details = j["error"]["details"] }
         }
         if message == nil { message = j["message"].nonEmptyString }
+        // Ключ повтора (А618): код ошибки лежит в верхнем `code`, а `errors` пустой (`[]`).
+        // Кладём его в details, чтобы MoneyOp.idemReply видел `details["code"]`. Только для
+        // idempotency_* и не для 422 (там details читают как ошибки полей формы).
+        if status != 422, details.object.isEmpty,
+           let code = j["code"].nonEmptyString, code.hasPrefix("idempotency_") {
+            details = .object(["code": .string(code)])
+        }
         return (okFlag, j["data"], j["meta"], message, details)
     }
 

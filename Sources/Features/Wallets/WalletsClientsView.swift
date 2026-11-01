@@ -318,8 +318,9 @@ struct WalletsCorrectSheet: View {
         self.onDone = onDone
         let path = "/api/admin/user-wallets/" + String(userId)
         // Журнал без страниц: последние 200 операций одним ответом.
-        _op = StateObject(wrappedValue: MoneyOpGuard(history: { _ in
-            MoneyOpPage(rows: try await API.shared.get(path)["transactions"].array, more: false)
+        _op = StateObject(wrappedValue: MoneyOpGuard(scope: MoneyOpStore.userWallet(userId), history: { _ in
+            let d = try await API.shared.get(path)
+            return MoneyOpPage(rows: d["transactions"].array, more: false, idem: d["idem"].boolValue)
         }))
     }
 
@@ -429,9 +430,21 @@ struct WalletsCorrectSheet: View {
             } message: {
                 Text(confirmMessage)
             }
+            .onAppear { restorePending() }
         }
         .moneyOpResendDialog(op) { resend() }
         .interactiveDismissDisabled(op.locked)
+    }
+
+    /// Корректировка с прошлого открытия осталась без ответа: поля — как ушли, сразу «Проверить».
+    private func restorePending() {
+        guard let r = op.takeRestored() else { return }
+        let v = r.body["amount"].decimal ?? 0
+        direction = v < 0 ? "debit" : "credit"
+        amountText = NSDecimalNumber(decimal: v < 0 ? -v : v).stringValue
+        reason = r.body["description"].stringValue
+        sentValue = v
+        check()
     }
 
     private var confirmButtonTitle: String {
@@ -484,7 +497,7 @@ struct WalletsCorrectSheet: View {
             let r = res.data
             let applied = r["applied"].decimal ?? (sentValue ?? 0)
             dismiss()
-            let text = "Готово: " + Fmt.moneySigned(applied) + ". Баланс: " + Fmt.money(r["balance"])
+            let text = MoneyOp.replayPrefix(res) + "Готово: " + Fmt.moneySigned(applied) + ". Баланс: " + Fmt.money(r["balance"])
             Task { await done(text) }
         case .failed(let e):
             Haptics.error()
