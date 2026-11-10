@@ -19,6 +19,9 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
     // В ссылке: yumurta-admin://section/couriers/<user_id курьера>; вкладка — ?tab=problems|complaints,
     // с id и вкладкой problems/complaints id — проблема или жалоба (её карточка, волна А92).
     case couriers
+    // «Приложения» (статистика клиентов и приложений, рассылка «обновите / установите»):
+    // ручки /api/admin/app-clients*, /api/admin/app-notify*; виден в «Ещё».
+    case apps
     case reports, audit, staff, settings, database, parser
 
     var id: String { rawValue }
@@ -49,6 +52,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .support: return "Поддержка"
         case .shopSupport: return "Сообщения продавцам"
         case .couriers: return "Курьеры"
+        case .apps: return "Приложения"
         case .reports: return "Отчёты"
         case .audit: return "Журнал"
         case .staff: return "Администраторы"
@@ -84,6 +88,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .support: return "headphones"
         case .shopSupport: return "bubble.left.and.bubble.right"
         case .couriers: return "car"
+        case .apps: return "iphone"
         case .reports: return "chart.pie"
         case .audit: return "clock.arrow.circlepath"
         case .staff: return "checkmark.shield"
@@ -135,6 +140,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .shopSupport: return AnyView(ShopSupportRootView(openId: openId, subtab: subtab))
         // openId — user_id курьера (его карточка открывается сразу), subtab — вкладка раздела.
         case .couriers: return AnyView(CouriersRootView(openId: openId, subtab: subtab))
+        case .apps: return AnyView(AppsRootView(openId: openId))
         case .reports: return AnyView(ReportsRootView(openId: openId))
         case .audit: return AnyView(AuditRootView(openId: openId))
         case .staff: return AnyView(StaffRootView(openId: openId))
