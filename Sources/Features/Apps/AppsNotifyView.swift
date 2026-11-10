@@ -478,11 +478,17 @@ struct AppsNotifyView: View {
         } header: {
             Text("Сообщение")
         } footer: {
-            Text("Заголовок: " + String(model.title.count) + " / " + String(AppsNotifyModel.titleLimit)
-                 + ", текст: " + String(model.body.count) + " / " + String(AppsNotifyModel.bodyLimit)
-                 + ". Пустой текст заменится текстом по умолчанию.")
+            Text(limitsText)
         }
         .disabled(model.locked)
+    }
+
+    /// Счётчики длины. Отдельным свойством с интерполяцией: длинная цепочка «+»
+    /// внутри Text(...) не укладывается в лимит проверки типов Swift (Xcode 26).
+    private var limitsText: String {
+        let t = "\(model.title.count) / \(AppsNotifyModel.titleLimit)"
+        let b = "\(model.body.count) / \(AppsNotifyModel.bodyLimit)"
+        return "Заголовок: \(t), текст: \(b). Пустой текст заменится текстом по умолчанию."
     }
 
     @ViewBuilder
