@@ -202,6 +202,8 @@ struct PlansEditorSheet: View {
     @State private var busy = false
     @State private var error: String?
     @State private var askPrice = false
+    /// Тариф уже создан POST-ом, но второй шаг (выключение) не прошёл: повтор правит его, а не плодит дубль.
+    @State private var createdId: Int?
 
     init(plan: JSON?, onSaved: @escaping () -> Void) {
         self.plan = plan
@@ -351,7 +353,7 @@ struct PlansEditorSheet: View {
     private func save() {
         guard !busy, let d = makeDraft() else { return }
         let requestBody = payload(for: d)
-        let id = planId
+        let id = planId ?? createdId
         let wantActive = d.active
         busy = true
         error = nil
@@ -361,6 +363,7 @@ struct PlansEditorSheet: View {
                     try await API.shared.put("/api/admin/plans/" + String(id), body: requestBody)
                 } else {
                     let res = try await API.shared.post("/api/admin/plans", body: requestBody)
+                    createdId = res["id"].int
                     // Сервер создаёт тариф всегда активным; если просили выключенный —
                     // сразу выключаем тем же PUT.
                     if !wantActive, let newId = res["id"].int {

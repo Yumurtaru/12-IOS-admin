@@ -46,12 +46,31 @@ struct DatabaseSQLTab: View {
             .padding(12)
         }
         .scrollDismissesKeyboard(.interactively)
-        .sheet(item: $confirm) { req in
-            DatabaseConfirmSheet(request: req, has2FA: has2FA)
+        // Один .sheet(item:) на оба листа: несколько .sheet на одной вью не гарантированы.
+        .sheet(item: sheetBinding) { kind in
+            switch kind {
+            case .confirm(let req):
+                DatabaseConfirmSheet(request: req, has2FA: has2FA)
+            case .row(let t):
+                DatabaseRowSheet(row: t.row, columns: t.columns)
+            }
         }
-        .sheet(item: $openRow) { t in
-            DatabaseRowSheet(row: t.row, columns: t.columns)
-        }
+    }
+
+    private var sheetBinding: Binding<DatabaseSQLSheet?> {
+        Binding<DatabaseSQLSheet?>(
+            get: {
+                if let c = confirm { return .confirm(c) }
+                if let r = openRow { return .row(r) }
+                return nil
+            },
+            set: { newValue in
+                if newValue == nil {
+                    confirm = nil
+                    openRow = nil
+                }
+            }
+        )
     }
 
     private var editorCard: some View {
@@ -262,6 +281,19 @@ struct DatabaseSQLResultCard: View {
                     .foregroundColor(Brand.muted)
             }
             DatabaseGrid(columns: result.columns, rows: rows, onTap: onOpenRow)
+        }
+    }
+}
+
+/// Лист вкладки SQL: подтверждение запроса или просмотр строки результата.
+enum DatabaseSQLSheet: Identifiable {
+    case confirm(DatabaseConfirmRequest)
+    case row(DatabaseSQLRowTarget)
+
+    var id: String {
+        switch self {
+        case .confirm(let r): return "confirm-" + r.id.uuidString
+        case .row(let t): return "row-" + t.id.uuidString
         }
     }
 }

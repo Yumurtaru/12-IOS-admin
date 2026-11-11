@@ -52,29 +52,49 @@ struct RegistrationDetailView: View {
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
         .task { if state == .idle { await find() } }
-        .sheet(isPresented: $showApprove) {
-            RegistrationApproveSheet(regId: id, regName: name) { result in
-                applyApproved(result)
+        // Один .sheet(item:) на все листы: несколько .sheet на одной вью не гарантированы.
+        .sheet(item: sheetBinding) { kind in
+            switch kind {
+            case .approve:
+                RegistrationApproveSheet(regId: id, regName: name) { result in
+                    applyApproved(result)
+                }
+            case .moreInfo:
+                TextInputSheet(title: "Запросить данные",
+                               message: "Что нужно уточнить? Текст уйдёт заявителю на почту.",
+                               placeholder: "Например: пришлите ИНН и адрес точки",
+                               multiline: true, submitTitle: "Отправить запрос") { text in
+                    try await API.shared.post("/api/admin/registrations/" + String(id) + "/more-info", body: ["message": text])
+                    applyDecision(status: "more_info_needed", note: text)
+                }
+            case .reject:
+                TextInputSheet(title: "Отклонить заявку",
+                               message: "Причина отказа уйдёт заявителю на почту.",
+                               placeholder: "Например: деятельность не подходит площадке",
+                               multiline: true, submitTitle: "Отклонить", destructive: true) { text in
+                    try await API.shared.post("/api/admin/registrations/" + String(id) + "/reject", body: ["reason": text])
+                    applyDecision(status: "rejected", note: text)
+                }
             }
         }
-        .sheet(isPresented: $showMoreInfo) {
-            TextInputSheet(title: "Запросить данные",
-                           message: "Что нужно уточнить? Текст уйдёт заявителю на почту.",
-                           placeholder: "Например: пришлите ИНН и адрес точки",
-                           multiline: true, submitTitle: "Отправить запрос") { text in
-                try await API.shared.post("/api/admin/registrations/" + String(id) + "/more-info", body: ["message": text])
-                applyDecision(status: "more_info_needed", note: text)
+    }
+
+    private var sheetBinding: Binding<RegistrationDetailSheet?> {
+        Binding<RegistrationDetailSheet?>(
+            get: {
+                if showApprove { return .approve }
+                if showMoreInfo { return .moreInfo }
+                if showReject { return .reject }
+                return nil
+            },
+            set: { newValue in
+                if newValue == nil {
+                    showApprove = false
+                    showMoreInfo = false
+                    showReject = false
+                }
             }
-        }
-        .sheet(isPresented: $showReject) {
-            TextInputSheet(title: "Отклонить заявку",
-                           message: "Причина отказа уйдёт заявителю на почту.",
-                           placeholder: "Например: деятельность не подходит площадке",
-                           multiline: true, submitTitle: "Отклонить", destructive: true) { text in
-                try await API.shared.post("/api/admin/registrations/" + String(id) + "/reject", body: ["reason": text])
-                applyDecision(status: "rejected", note: text)
-            }
-        }
+        )
     }
 
     private var content: some View {
@@ -473,4 +493,13 @@ struct RegistrationApproveSheet: View {
             }
         }
     }
+}
+
+/// Лист карточки заявки (один .sheet(item:) вместо трёх).
+enum RegistrationDetailSheet: String, Identifiable {
+    case approve
+    case moreInfo
+    case reject
+
+    var id: String { rawValue }
 }

@@ -53,15 +53,18 @@ struct ReturnsRootView: View {
             .confirmAction($pending) {
                 try await runPendingOp()
             }
-            .sheet(item: $rejectIds, onDismiss: { showDeferredResult() }) { box in
-                ReturnsRejectSheet(count: box.ids.count) { note in
-                    try await reject(ids: box.ids, note: note)
-                }
-            }
-            .sheet(item: paidBinding) { box in
-                ReturnsPaidSheet(row: box.row) { note in
-                    try await ReturnsActions.markPaid(id: box.row.id ?? 0, note: note)
-                    refreshAfterAction()
+            // Один .sheet(item:) на оба листа: несколько .sheet на одной вью не гарантированы.
+            .sheet(item: sheetBinding, onDismiss: { showDeferredResult() }) { kind in
+                switch kind {
+                case .reject(let box):
+                    ReturnsRejectSheet(count: box.ids.count) { note in
+                        try await reject(ids: box.ids, note: note)
+                    }
+                case .paid(let box):
+                    ReturnsPaidSheet(row: box.row) { note in
+                        try await ReturnsActions.markPaid(id: box.row.id ?? 0, note: note)
+                        refreshAfterAction()
+                    }
                 }
             }
             .alert("Готово", isPresented: bulkResultShown) {
@@ -325,9 +328,20 @@ struct ReturnsRootView: View {
         Binding(get: { bulkResult != nil }, set: { if !$0 { bulkResult = nil } })
     }
 
-    private var paidBinding: Binding<ReturnsRowBox?> {
-        Binding(get: { paidRow.map { ReturnsRowBox(row: $0) } },
-                set: { paidRow = $0?.row })
+    private var sheetBinding: Binding<ReturnsSheet?> {
+        Binding<ReturnsSheet?>(
+            get: {
+                if let r = rejectIds { return .reject(r) }
+                if let p = paidRow { return .paid(ReturnsRowBox(row: p)) }
+                return nil
+            },
+            set: { newValue in
+                if newValue == nil {
+                    rejectIds = nil
+                    paidRow = nil
+                }
+            }
+        )
     }
 
     private func openDeepLinkOnce() {
@@ -360,6 +374,19 @@ struct ReturnsIdList: Identifiable {
 
     init(ids: [Int]) {
         self.ids = ids
+    }
+}
+
+/// Лист списка возвратов: «Отклонить» или «Деньги выплачены».
+enum ReturnsSheet: Identifiable {
+    case reject(ReturnsIdList)
+    case paid(ReturnsRowBox)
+
+    var id: String {
+        switch self {
+        case .reject(let b): return "reject-" + b.id.uuidString
+        case .paid(let b): return "paid-" + b.id
+        }
     }
 }
 

@@ -21,6 +21,7 @@ struct ShopSupportRootView: View {
     @State private var showPicker = false
     @State private var pickedId: Int?
     @State private var showBroadcast = false
+    @State private var dismissedSheet: ShopSupportRootSheet?
 
     init(openId: Int? = nil, subtab: String? = nil) {
         self.openId = openId
@@ -38,13 +39,46 @@ struct ShopSupportRootView: View {
             .task { await model.loadIfNeeded() }
             .onAppear(perform: appeared)
             .navigationDestination(isPresented: $chatActive) { chatDestination }
-            .sheet(isPresented: $showPicker, onDismiss: openPicked) {
-                ShopSupportShopPicker { id in pickedId = id }
+            // Один .sheet(item:) на оба листа: несколько .sheet на одной вью не гарантированы.
+            .sheet(item: sheetBinding, onDismiss: handleSheetDismiss) { kind in
+                switch kind {
+                case .picker:
+                    ShopSupportShopPicker { id in pickedId = id }
+                case .broadcast:
+                    ShopSupportBroadcastView()
+                }
             }
+    }
+
+    private var sheetBinding: Binding<ShopSupportRootSheet?> {
+        Binding<ShopSupportRootSheet?>(
+            get: {
+                if showBroadcast { return .broadcast }
+                if showPicker { return .picker }
+                return nil
+            },
+            set: { newValue in
+                if newValue == nil {
+                    dismissedSheet = showBroadcast ? .broadcast : (showPicker ? .picker : nil)
+                    showBroadcast = false
+                    showPicker = false
+                }
+            }
+        )
+    }
+
+    private func handleSheetDismiss() {
+        let kind = dismissedSheet
+        dismissedSheet = nil
+        switch kind {
+        case .picker:
+            openPicked()
+        case .broadcast:
             // После рассылки у адресатов появились переписки — обновляем список.
-            .sheet(isPresented: $showBroadcast, onDismiss: { Task { await model.refresh() } }) {
-                ShopSupportBroadcastView()
-            }
+            Task { await model.refresh() }
+        case nil:
+            break
+        }
     }
 
     @ViewBuilder
@@ -300,4 +334,12 @@ struct ShopSupportThreadRow: View {
         if let p = thread["phone"].nonEmptyString { parts.append(Fmt.phone(p)) }
         return parts.joined(separator: " · ")
     }
+}
+
+/// Лист списка переписок: выбор организации или рассылка (один .sheet(item:) вместо двух).
+enum ShopSupportRootSheet: String, Identifiable {
+    case picker
+    case broadcast
+
+    var id: String { rawValue }
 }

@@ -46,16 +46,35 @@ struct ReturnDetailView: View {
                 await enrich()
             }
         }
-        .sheet(isPresented: $askReject) {
-            ReturnsRejectSheet(count: 1) { note in
-                try await act { try await ReturnsActions.moderate(id: id, approve: false, note: note) }
+        // Один .sheet(item:) на оба листа: несколько .sheet на одной вью не гарантированы.
+        .sheet(item: sheetBinding) { kind in
+            switch kind {
+            case .reject:
+                ReturnsRejectSheet(count: 1) { note in
+                    try await act { try await ReturnsActions.moderate(id: id, approve: false, note: note) }
+                }
+            case .paid:
+                ReturnsPaidSheet(row: row) { note in
+                    try await act { try await ReturnsActions.markPaid(id: id, note: note) }
+                }
             }
         }
-        .sheet(isPresented: $askPaid) {
-            ReturnsPaidSheet(row: row) { note in
-                try await act { try await ReturnsActions.markPaid(id: id, note: note) }
+    }
+
+    private var sheetBinding: Binding<ReturnDetailSheet?> {
+        Binding<ReturnDetailSheet?>(
+            get: {
+                if askReject { return .reject }
+                if askPaid { return .paid }
+                return nil
+            },
+            set: { newValue in
+                if newValue == nil {
+                    askReject = false
+                    askPaid = false
+                }
             }
-        }
+        )
     }
 
     private var content: some View {
@@ -430,4 +449,12 @@ struct ReturnDetailLogRow: View {
         }
         .padding(.vertical, 2)
     }
+}
+
+/// Лист карточки возврата: «Отклонить» или «Деньги выплачены».
+enum ReturnDetailSheet: String, Identifiable {
+    case reject
+    case paid
+
+    var id: String { rawValue }
 }

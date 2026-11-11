@@ -29,6 +29,7 @@ struct ShopDetailView: View {
     @State private var enterBusy = false
     @State private var enterError: String?
     @State private var showOwnerPassword = false
+    @State private var dismissedSheet: ShopDetailSheet?
     @Environment(\.openURL) private var openURL
 
     init(id: Int, onDeleted: ((Int) -> Void)? = nil) {
@@ -41,30 +42,36 @@ struct ShopDetailView: View {
     private var name: String { shop["name"].nonEmptyString ?? ("Магазин #" + String(id)) }
     private var status: String { shop["status"].stringValue }
 
-    var body: some View {
-        AsyncContent(state: loader.state, emptyText: "Организация не найдена", retry: { await loader.load() }) {
-            content
-        }
-        .navigationTitle(name)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await loader.loadIfNeeded() }
-        .sheet(isPresented: $showTopup) {
-            ShopTopupSheet(shopId: id, shopName: name) { _ in
-                await loader.load()
+    /// Какой лист открыт сейчас (флаги ниже взаимно исключают друг друга по приоритету).
+    private var currentSheet: ShopDetailSheet? {
+        if let pv = deletePreview { return .delete(pv) }
+        if showOwnerPassword { return .ownerPassword }
+        if showReject { return .reject }
+        if showTopup { return .topup }
+        return nil
+    }
+
+    private var sheetBinding: Binding<ShopDetailSheet?> {
+        Binding<ShopDetailSheet?>(
+            get: { currentSheet },
+            set: { newValue in
+                if newValue == nil {
+                    dismissedSheet = currentSheet
+                    showTopup = false
+                    showReject = false
+                    showOwnerPassword = false
+                    deletePreview = nil
+                }
             }
-        }
-        .sheet(isPresented: $showReject) {
-            TextInputSheet(title: "На доработку",
-                           message: "Что нужно исправить в «" + name + "»? Текст увидит продавец в панели.",
-                           placeholder: "Например: добавьте фото и часы работы",
-                           multiline: true, submitTitle: "Вернуть на доработку", minLength: 5,
-                           destructive: true) { text in
-                try await API.shared.post("/api/admin/shops/" + String(id) + "/publish-reject", body: ["note": text])
-                await loader.load()
-                Task { await Notifier.shared.refresh(force: true) }
-            }
-        }
-        .sheet(item: $deletePreview, onDismiss: {
+        )
+    }
+
+    private func handleSheetDismiss() {
+        let kind = dismissedSheet
+        dismissedSheet = nil
+        guard let kind = kind else { return }
+        switch kind {
+        case .delete:
             // Алерт — только после закрытия листа: иначе iOS 16 может его не показать.
             if let t = pendingDeletedText {
                 pendingDeletedText = nil
@@ -74,15 +81,46 @@ struct ShopDetailView: View {
                 // удаление могло дойти до конца на сервере.
                 Task { await loader.load() }
             }
-        }) { pv in
-            ShopDeleteSheet(shopId: id, shopName: name, preview: pv.data) { result in
-                pendingDeletedText = result
-            }
+        case .ownerPassword:
+            Task { await loader.load() }
+        case .topup, .reject:
+            break
         }
-        // Волна А76: «Выдать новый пароль». После закрытия — перечитать карточку
-        // (has_password мог смениться).
-        .sheet(isPresented: $showOwnerPassword, onDismiss: { Task { await loader.load() } }) {
-            ShopOwnerPasswordSheet(shopId: id, shopName: name, ownerName: shop["owner"]["name"].nonEmptyString)
+    }
+
+    var body: some View {
+        AsyncContent(state: loader.state, emptyText: "Организация не найдена", retry: { await loader.load() }) {
+            content
+        }
+        .navigationTitle(name)
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await loader.loadIfNeeded() }
+        // Один .sheet(item:) на все листы: несколько .sheet на одной вью не гарантированы.
+        .sheet(item: sheetBinding, onDismiss: handleSheetDismiss) { kind in
+            switch kind {
+            case .topup:
+                ShopTopupSheet(shopId: id, shopName: name) { _ in
+                    await loader.load()
+                }
+            case .reject:
+                TextInputSheet(title: "На доработку",
+                               message: "Что нужно исправить в «" + name + "»? Текст увидит продавец в панели.",
+                               placeholder: "Например: добавьте фото и часы работы",
+                               multiline: true, submitTitle: "Вернуть на доработку", minLength: 5,
+                               destructive: true) { text in
+                    try await API.shared.post("/api/admin/shops/" + String(id) + "/publish-reject", body: ["note": text])
+                    await loader.load()
+                    Task { await Notifier.shared.refresh(force: true) }
+                }
+            case .delete(let pv):
+                ShopDeleteSheet(shopId: id, shopName: name, preview: pv.data) { result in
+                    pendingDeletedText = result
+                }
+            case .ownerPassword:
+                // Волна А76: «Выдать новый пароль». После закрытия — перечитать карточку
+                // (has_password мог смениться).
+                ShopOwnerPasswordSheet(shopId: id, shopName: name, ownerName: shop["owner"]["name"].nonEmptyString)
+            }
         }
         .alert("Организация удалена", isPresented: deletedShown) {
             Button("OK") {
@@ -497,4 +535,21 @@ struct ShopDetailOwnerSection: View {
 struct ShopDeletePreview: Identifiable {
     let id = UUID()
     let data: JSON
+}
+
+/// Лист карточки организации (один .sheet(item:) вместо четырёх).
+enum ShopDetailSheet: Identifiable {
+    case topup
+    case reject
+    case ownerPassword
+    case delete(ShopDeletePreview)
+
+    var id: String {
+        switch self {
+        case .topup: return "topup"
+        case .reject: return "reject"
+        case .ownerPassword: return "owner"
+        case .delete(let pv): return "delete-" + pv.id.uuidString
+        }
+    }
 }

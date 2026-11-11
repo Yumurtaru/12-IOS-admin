@@ -39,14 +39,33 @@ struct DatabaseIOTab: View {
             }
             .listStyle(.insetGrouped)
         }
-        .sheet(isPresented: $showPicker) {
-            DatabaseDocumentPicker { url in
-                picked(url)
+        // Один .sheet(item:) на оба листа: несколько .sheet на одной вью не гарантированы.
+        .sheet(item: sheetBinding) { kind in
+            switch kind {
+            case .picker:
+                DatabaseDocumentPicker { url in
+                    picked(url)
+                }
+            case .confirm(let req):
+                DatabaseConfirmSheet(request: req, has2FA: has2FA)
             }
         }
-        .sheet(item: $confirm) { req in
-            DatabaseConfirmSheet(request: req, has2FA: has2FA)
-        }
+    }
+
+    private var sheetBinding: Binding<DatabaseIOSheet?> {
+        Binding<DatabaseIOSheet?>(
+            get: {
+                if let c = confirm { return .confirm(c) }
+                if showPicker { return .picker }
+                return nil
+            },
+            set: { newValue in
+                if newValue == nil {
+                    showPicker = false
+                    confirm = nil
+                }
+            }
+        )
     }
 
     // MARK: - Экспорт
@@ -186,6 +205,19 @@ struct DatabaseIOTab: View {
             } catch let e as APIError {
                 throw DatabaseBackupsTab.withSafety(e)
             }
+        }
+    }
+}
+
+/// Лист вкладки «Импорт/экспорт»: выбор файла или подтверждение.
+enum DatabaseIOSheet: Identifiable {
+    case picker
+    case confirm(DatabaseConfirmRequest)
+
+    var id: String {
+        switch self {
+        case .picker: return "picker"
+        case .confirm(let r): return "confirm-" + r.id.uuidString
         }
     }
 }

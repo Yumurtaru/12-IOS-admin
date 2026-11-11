@@ -221,9 +221,9 @@ final class AppsNotifyModel: ObservableObject {
     /// Можно ли нажимать «Отправить».
     var canSend: Bool {
         guard let p = preview, !sending, pendingJob == nil, !previewLoading else { return false }
-        if p.recipients <= 0 { return false }
-        if isUpdate && p.storeMissing { return false }
-        return true
+        // storeMissing — только предупреждение: сервер шлёт на платформы, где версия и ссылка заданы
+        // (если не задано нигде — preview отвечает 422 и до сюда дело не доходит).
+        return p.recipients > 0
     }
 
     /// Новый запуск: один guard_key на весь запуск.
@@ -439,8 +439,7 @@ struct AppsNotifyView: View {
             KVRow("Последняя версия", v)
         }
         if model.isUpdate && p.storeMissing {
-            ErrorBanner(message: "Нет версии приложения или ссылки на магазин — уведомление об обновлении отправить нельзя. Заполните их в настройках сайта и обновите расчёт.",
-                        retry: { model.startPreview() })
+            InfoBanner(storeMissingText, systemImage: "exclamationmark.triangle.fill", color: Brand.amber)
         }
         if p.noChannel > 0 {
             InfoBanner(noChannelText(p), systemImage: "exclamationmark.triangle.fill", color: Brand.amber)
@@ -450,6 +449,10 @@ struct AppsNotifyView: View {
                 .font(.footnote)
                 .foregroundColor(Brand.muted)
         }
+    }
+
+    private var storeMissingText: String {
+        "Для одной из платформ не заданы версия или ссылка на магазин — ей уведомление не уйдёт. Заполните их в «Настройки → Версии приложений»."
     }
 
     private func noChannelText(_ p: AppsNotifyPreview) -> String {
@@ -548,9 +551,7 @@ struct AppsNotifyView: View {
                     ProgressView()
                 }
                 counters
-                Text(model.stopRequested
-                     ? "Остановится после текущей пачки…"
-                     : "Пачек: " + String(model.batches) + ". Не закрывайте приложение до конца отправки.")
+                Text(progressHint)
                     .font(.caption)
                     .foregroundColor(Brand.muted)
                 Button(role: .destructive) {
@@ -567,12 +568,21 @@ struct AppsNotifyView: View {
         }
     }
 
+    private var progressHint: String {
+        if model.stopRequested { return "Остановится после текущей пачки…" }
+        return "Пачек: \(model.batches). Не закрывайте приложение до конца отправки."
+    }
+
     private var counters: some View {
         VStack(alignment: .leading, spacing: 6) {
             KVRow("Отправлено", AppsFmt.num(model.sent))
             KVRow("Пропущено", AppsFmt.num(model.skipped))
             KVRow("Ошибки", AppsFmt.num(model.failed))
         }
+    }
+
+    private var dismissTitle: String {
+        model.pendingJob == nil ? "Скрыть" : "Закрыть без продолжения"
     }
 
     @ViewBuilder
@@ -600,7 +610,7 @@ struct AppsNotifyView: View {
                     .frame(maxWidth: .infinity)
             }
         }
-        Button(model.pendingJob == nil ? "Скрыть" : "Закрыть без продолжения") {
+        Button(dismissTitle) {
             model.dismissOutcome()
         }
         .foregroundColor(Brand.muted)

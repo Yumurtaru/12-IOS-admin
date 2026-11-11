@@ -458,8 +458,7 @@ struct AppsVersionGroupView: View {
 
     @ViewBuilder
     private func summary(_ g: AppsGroup) -> some View {
-        let installsLine = "Установок: " + AppsFmt.num(g.installs) + " · людей: " + AppsFmt.num(g.people)
-            + " · активных за 30 дн.: " + AppsFmt.num(g.active30)
+        let installsLine = "Установок: \(AppsFmt.num(g.installs)) · людей: \(AppsFmt.num(g.people)) · активных за 30 дн.: \(AppsFmt.num(g.active30))"
         Text(installsLine).font(.footnote).foregroundColor(Brand.muted)
         HStack(spacing: 6) {
             if let v = g.latestVersion {

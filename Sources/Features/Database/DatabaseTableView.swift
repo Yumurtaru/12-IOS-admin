@@ -172,6 +172,19 @@ struct DatabaseEditorTarget: Identifiable {
     }
 }
 
+/// Лист карточки строки: правка или подтверждение удаления.
+enum DatabaseRowViewSheet: Identifiable {
+    case edit(DatabaseEditorTarget)
+    case confirm(DatabaseConfirmRequest)
+
+    var id: String {
+        switch self {
+        case .edit(let t): return "edit-" + t.id.uuidString
+        case .confirm(let r): return "confirm-" + r.id.uuidString
+        }
+    }
+}
+
 /// Строка в списке: ключ и первые колонки.
 struct DatabaseRowSummary: View {
     let row: JSON
@@ -273,20 +286,37 @@ struct DatabaseRowView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(pk.isEmpty ? "Строка" : pkText)
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $editor, onDismiss: {
-            // Строка на экране устарела — вернуться к списку (он обновится).
-            if edited { dismiss() }
-        }) { target in
-            DatabaseRowEditor(table: table, columns: columns, pk: pk, row: target.row, has2FA: has2FA) {
-                edited = true
-                onChanged()
+        // Один .sheet(item:) на оба листа: несколько .sheet на одной вью не гарантированы.
+        .sheet(item: sheetBinding, onDismiss: {
+            // Строка на экране устарела (правка или удаление) — вернуться к списку (он обновится).
+            if edited || deleted { dismiss() }
+        }) { kind in
+            switch kind {
+            case .edit(let target):
+                DatabaseRowEditor(table: table, columns: columns, pk: pk, row: target.row, has2FA: has2FA) {
+                    edited = true
+                    onChanged()
+                }
+            case .confirm(let req):
+                DatabaseConfirmSheet(request: req, has2FA: has2FA)
             }
         }
-        .sheet(item: $confirm, onDismiss: {
-            if deleted { dismiss() }
-        }) { req in
-            DatabaseConfirmSheet(request: req, has2FA: has2FA)
-        }
+    }
+
+    private var sheetBinding: Binding<DatabaseRowViewSheet?> {
+        Binding<DatabaseRowViewSheet?>(
+            get: {
+                if let c = confirm { return .confirm(c) }
+                if let e = editor { return .edit(e) }
+                return nil
+            },
+            set: { newValue in
+                if newValue == nil {
+                    editor = nil
+                    confirm = nil
+                }
+            }
+        )
     }
 
     private func note(for column: String) -> String? {

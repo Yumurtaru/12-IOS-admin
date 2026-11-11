@@ -71,21 +71,40 @@ struct BannersCreateSheet: View {
                     }
                 }
             }
-            .sheet(isPresented: $pickPhoto) {
-                ImagePicker(onPick: { image in
-                    upload(image)
-                }, onFail: { message in
-                    error = message
-                })
-            }
-            .sheet(isPresented: $pickCity) {
-                CitiesPickerSheet(allowAll: true) { id, name in
-                    cityId = id
-                    cityName = name
+            // Один .sheet(item:) на оба листа: несколько .sheet на одной вью не гарантированы.
+            .sheet(item: pickerBinding) { kind in
+                switch kind {
+                case .photo:
+                    ImagePicker(onPick: { image in
+                        upload(image)
+                    }, onFail: { message in
+                        error = message
+                    })
+                case .city:
+                    CitiesPickerSheet(allowAll: true) { id, name in
+                        cityId = id
+                        cityName = name
+                    }
                 }
             }
         }
         .interactiveDismissDisabled(busy || uploading)
+    }
+
+    private var pickerBinding: Binding<BannersPickerSheet?> {
+        Binding<BannersPickerSheet?>(
+            get: {
+                if pickPhoto { return .photo }
+                if pickCity { return .city }
+                return nil
+            },
+            set: { newValue in
+                if newValue == nil {
+                    pickPhoto = false
+                    pickCity = false
+                }
+            }
+        )
     }
 
     // MARK: - Картинка
@@ -221,4 +240,12 @@ struct BannersCreateSheet: View {
             }
         }
     }
+}
+
+/// Выбор для формы баннера: фото или город (один .sheet(item:) вместо двух).
+enum BannersPickerSheet: String, Identifiable {
+    case photo
+    case city
+
+    var id: String { rawValue }
 }
