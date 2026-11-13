@@ -10,7 +10,13 @@ targets:
     type: application
     platform: iOS
     deploymentTarget: "16.0"
-    sources: [Sources]
+    # Манифест конфиденциальности (обязателен для App Store Connect, в т.ч. TestFlight) — ЯВНО в
+    # «Copy Bundle Resources», как у курьера: XcodeGen 2.40.0 не относит .xcprivacy ни к какой фазе.
+    sources:
+      - path: Sources
+        excludes: [App/PrivacyInfo.xcprivacy]
+      - path: Sources/App/PrivacyInfo.xcprivacy
+        buildPhase: resources
     info:
       path: Generated/Info.plist
       properties:

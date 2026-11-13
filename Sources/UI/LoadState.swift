@@ -148,7 +148,12 @@ final class ObjectLoader: ObservableObject {
             lastRefreshError = nil
             state = .loaded
         } catch {
-            guard gen == generation, !APIError.isCancellation(error) else { return }
+            guard gen == generation else { return }
+            if APIError.isCancellation(error) {
+                // Экран ушёл (task отменён): без сброса спиннер остался бы навсегда, loadIfNeeded ждёт .idle.
+                if state == .loading { state = .idle }
+                return
+            }
             if data.isNull {
                 state = .failed(APIError.describe(error))
             } else {

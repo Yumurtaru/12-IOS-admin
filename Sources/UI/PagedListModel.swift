@@ -193,7 +193,12 @@ final class PagedListModel: ObservableObject {
             updatePaging(data: res.data, meta: res.meta, received: list.count)
             state = items.isEmpty ? .empty(nil) : .loaded
         } catch {
-            guard gen == generation, !APIError.isCancellation(error) else { return }
+            guard gen == generation else { return }
+            if APIError.isCancellation(error) {
+                // task экрана отменён: вернуть .idle, иначе loadIfNeeded не перезагрузит и спиннер вечный.
+                if state == .loading { state = .idle }
+                return
+            }
             let msg = APIError.describe(error)
             if items.isEmpty {
                 state = .failed(msg)
