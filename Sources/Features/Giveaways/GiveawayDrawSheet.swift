@@ -3,7 +3,8 @@ import SwiftUI
 /// «Провести розыгрыш» (как форма «Новый розыгрыш» в admin-giveaways.js).
 ///
 /// POST /api/admin/giveaways/draw {title, prize, winners_count, pickup_text?, city_id?,
-/// exclude_staff?, draw_key} → {giveaway:{…}, winners:[…], repeated}.
+/// exclude_staff?, app_only?, draw_key} → {giveaway:{…}, winners:[…], repeated}.
+/// app_only: true — участвуют только установившие приложение покупателя (Android / iPhone); false/нет поля — все.
 ///
 /// Ключ повтора `draw_key` — ОДИН на это окно, создаётся при открытии (до отправки).
 /// Сервер по нему не проводит второй розыгрыш, а отдаёт уже проведённый с repeated=true.
@@ -30,6 +31,10 @@ struct GiveawayDrawSheet: View {
     @State private var pickup = ""
     @State private var cityValue: String
     @State private var excludeStaff: Bool
+    /// «Только для тех, кто установил приложение» (app_only).
+    @State private var appOnly: Bool
+    /// Сколько участников с приложением (with_app из participants; nil — сервер старый или ещё считаем).
+    @State private var withApp: Int?
     @State private var cities: [GiveawayParticipantsStats.City]
     @State private var noCity: Int
 
@@ -57,15 +62,17 @@ struct GiveawayDrawSheet: View {
     ///   - noCity: участников без города;
     ///   - cityId: город, выбранный в списке участников (nil — все);
     ///   - excludeStaff: галочка «без сотрудников» из списка участников;
+    ///   - appOnly: галочка «только с приложением» из списка участников;
     ///   - onDrawn: розыгрыш проведён (или мог пройти).
     init(privacy: GiveawaysPrivacy, cities: [GiveawayParticipantsStats.City], noCity: Int, cityId: Int?,
-         excludeStaff: Bool, onDrawn: @escaping () -> Void) {
+         excludeStaff: Bool, appOnly: Bool = false, onDrawn: @escaping () -> Void) {
         self.onDrawn = onDrawn
         self.privacy = privacy
         _cities = State(initialValue: cities)
         _noCity = State(initialValue: noCity)
         _cityValue = State(initialValue: cityId.map { String($0) } ?? "")
         _excludeStaff = State(initialValue: excludeStaff)
+        _appOnly = State(initialValue: appOnly)
     }
 
     private func trim(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -108,6 +115,7 @@ struct GiveawayDrawSheet: View {
             .task { await loadCount() }
             .onChange(of: cityValue) { _ in Task { await loadCount() } }
             .onChange(of: excludeStaff) { _ in Task { await loadCount() } }
+            .onChange(of: appOnly) { _ in Task { await loadCount() } }
         }
         // Подтверждение «Отмены» при неизвестном исходе — на внешнем виде (у Form свой диалог).
         .confirmationDialog("Розыгрыш мог пройти — закрыть без повтора?", isPresented: $askCloseUnknown,
@@ -179,11 +187,12 @@ struct GiveawayDrawSheet: View {
             }
             fieldError("city_id")
             FormToggle("Не включать сотрудников организаций", isOn: $excludeStaff)
+            FormToggle("Только для тех, кто установил приложение", isOn: $appOnly)
             countRow
         } header: {
             Text("Участники")
         } footer: {
-            Text("Город — тот, что покупатель выбрал в приложении. Владельцы организаций и администраторы не участвуют.")
+            Text(participantsFooter)
         }
         .disabled(locked)
 
@@ -224,6 +233,19 @@ struct GiveawayDrawSheet: View {
         f.timeZone = Fmt.moscow
         f.dateFormat = "dd.MM.yyyy"
         return f.string(from: Date())
+    }
+
+    /// Подпись под «Участники»: кто участвует с учётом галочки «только с приложением».
+    private var participantsFooter: String {
+        let base = "Город — тот, что покупатель выбрал в приложении. Владельцы организаций и администраторы не участвуют. "
+        if appOnly {
+            return base + "Участвуют только покупатели с приложением Yumurta на Android или iPhone."
+        }
+        var s = base + "Участвуют все покупатели"
+        if let n = withApp {
+            s += ", из них с приложением — " + Fmt.number(n)
+        }
+        return s + "."
     }
 
     private var allCitiesLabel: String {
@@ -282,7 +304,7 @@ struct GiveawayDrawSheet: View {
         var s = "Выбрать " + GiveawaysFormat.winners(n)
         if let t = total { s += " из " + GiveawaysFormat.participants(t) }
         s += "?\n\nПриз: " + trim(prize)
-        s += "\nУчастники: " + GiveawaysFormat.whereText(city: cityName, excludeStaff: excludeStaff)
+        s += "\nУчастники: " + GiveawaysFormat.whereText(city: cityName, excludeStaff: excludeStaff, appOnly: appOnly)
         s += "\n\nПобедители получат уведомление. Переиграть этот розыгрыш будет нельзя."
         return s
     }
@@ -299,6 +321,7 @@ struct GiveawayDrawSheet: View {
             "page": "1",
             "city_id": cityValue.isEmpty ? nil : cityValue,
             "exclude_staff": excludeStaff ? "1" : "0",
+            "app_only": appOnly ? "1" : "0",
         ]
         do {
             let d = try await API.shared.get("/api/admin/giveaways/participants", query: q)
@@ -308,6 +331,7 @@ struct GiveawayDrawSheet: View {
             if d["cities"].isArray { cities = stats.cities }
             noCity = stats.noCity
             total = stats.all ?? d["total"].int
+            withApp = d["with_app"].int
         } catch {
             guard gen == countGeneration, !APIError.isCancellation(error) else { return }
             total = nil
@@ -353,6 +377,7 @@ struct GiveawayDrawSheet: View {
             "winners_count": .number(Double(winnersCount ?? 0)),
             "pickup_text": .string(trim(pickup)),
             "exclude_staff": .bool(excludeStaff),
+            "app_only": .bool(appOnly),
             "draw_key": .string(drawKey),
         ]
         if let cid = Int(cityValue), cid > 0 { b["city_id"] = .number(Double(cid)) } else { b["city_id"] = .null }

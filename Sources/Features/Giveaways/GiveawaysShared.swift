@@ -17,9 +17,10 @@ enum GiveawaysFormat {
     static func winners(_ n: Int) -> String { Fmt.plural(n, "победитель", "победителя", "победителей") }
 
     /// Описание отбора участников: «все города, без сотрудников организаций».
-    static func whereText(city: String?, excludeStaff: Bool) -> String {
+    static func whereText(city: String?, excludeStaff: Bool, appOnly: Bool = false) -> String {
         let c = city.map { "город " + $0 } ?? "все города"
         return c + (excludeStaff ? ", без сотрудников организаций" : ", сотрудники организаций тоже участвуют")
+            + (appOnly ? ", только установившие приложение" : ", все покупатели (с приложением и без)")
     }
 
     /// Ключ повтора розыгрыша (draw_key): [A-Za-z0-9_-], до 64 символов.

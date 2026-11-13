@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Раздел «Розыгрыши» (как /admin/giveaways.php сайта, волна А104, routes/admin_giveaways.php).
 ///
-///  * «Участники» — GET /api/admin/giveaways/participants?q=&page=&city_id=&exclude_staff=1:
+///  * «Участники» — GET /api/admin/giveaways/participants?q=&page=&city_id=&exclude_staff=1&app_only=0:
 ///    {items:[{id, name, phone, email, created_at, city}], total, page, pages} и — на первой
 ///    странице без поиска — cities [{id, name, cnt}], no_city, all (участников под фильтр);
 ///  * «Провести розыгрыш» — лист GiveawayDrawSheet (POST /api/admin/giveaways/draw);
@@ -25,7 +25,7 @@ struct GiveawaysRootView: View {
     // Модели живут здесь, чтобы при переключении вкладок данные не терялись.
     // Как на сервере: по умолчанию exclude_staff=1 (сотрудники организаций не участвуют).
     @StateObject private var participants = PagedListModel(path: "/api/admin/giveaways/participants",
-                                                           filters: ["exclude_staff": "1"])
+                                                           filters: ["exclude_staff": "1", "app_only": "0"])
     @StateObject private var history = PagedListModel(path: "/api/admin/giveaways", searchParam: nil)
     /// Сводка участников с первой страницы без поиска (при поиске сервер её не присылает).
     @State private var stats = GiveawayParticipantsStats()
@@ -64,6 +64,7 @@ struct GiveawaysRootView: View {
             GiveawayDrawSheet(privacy: privacy, cities: stats.cities, noCity: stats.noCity,
                               cityId: participants.filter("city_id").flatMap { Int($0) },
                               excludeStaff: participants.filter("exclude_staff") != "0",
+                              appOnly: participants.filter("app_only") == "1",
                               onDrawn: { drawn() })
         }
         .navigationDestination(isPresented: $deepLinkShown) {
@@ -111,6 +112,10 @@ struct GiveawaysRootView: View {
             ListFilter(key: "exclude_staff", title: "Сотрудники", options: [
                 PickerOption(value: "1", label: "Без сотрудников"),
                 PickerOption(value: "0", label: "Вместе с сотрудниками"),
+            ], allLabel: nil),
+            ListFilter(key: "app_only", title: "Приложение", options: [
+                PickerOption(value: "0", label: "Все покупатели"),
+                PickerOption(value: "1", label: "Только с приложением"),
             ], allLabel: nil),
         ]
     }
@@ -263,7 +268,8 @@ struct GiveawayHistoryRow: View {
 
     private var metaText: String {
         var parts = [Fmt.date(item["created_at"].string),
-                     "участников " + Fmt.number(item["participants"].intValue)]
+                     "участников " + Fmt.number(item["participants"].intValue)
+                        + (item["app_only"].bool == true ? " (только с приложением)" : "")]
         if let c = item["city"].nonEmptyString { parts.append(c) }
         parts.append("вручено " + String(item["given"].intValue) + " из " + String(item["winners_count"].intValue))
         return parts.joined(separator: " · ")

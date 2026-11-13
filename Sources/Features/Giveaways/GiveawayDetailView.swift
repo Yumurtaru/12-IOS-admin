@@ -72,6 +72,7 @@ struct GiveawayDetailView: View {
             KVRow("Участников", Fmt.number(g["participants"].intValue))
             KVRow("Город", g["city"].nonEmptyString ?? "Все города")
             KVRow("Сотрудники организаций", g["exclude_staff"].bool == false ? "участвовали" : "не участвовали")
+            KVRow("Приложение", g["app_only"].bool == true ? "только установившие приложение" : "все покупатели")
             KVRow("Победителей", String(winners.count) + " · вручено " + String(givenCount))
             if let by = g["created_by_name"].nonEmptyString {
                 KVRow("Провёл", by)
