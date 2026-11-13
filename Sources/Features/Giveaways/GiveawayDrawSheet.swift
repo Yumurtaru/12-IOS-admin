@@ -335,6 +335,7 @@ struct GiveawayDrawSheet: View {
         } catch {
             guard gen == countGeneration, !APIError.isCancellation(error) else { return }
             total = nil
+            withApp = nil
             countError = APIError.describe(error)
         }
         if gen == countGeneration { counting = false }
