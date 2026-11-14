@@ -243,10 +243,10 @@ struct AssistantRootView: View {
                     .font(.subheadline)
                     .foregroundColor(cost.isNull ? Brand.muted : Brand.text)
             }
-            Text("Запросов: " + Fmt.number(x["calls"].intValue) + " · ошибок: " + Fmt.number(x["fails"].intValue))
+            Text(verbatim: "Запросов: \(Fmt.number(x["calls"].intValue)) · ошибок: \(Fmt.number(x["fails"].intValue))")
                 .font(.footnote)
                 .foregroundColor(Brand.muted)
-            Text("Токены вход / выход: " + Fmt.number(x["tokens_in"].intValue) + " / " + Fmt.number(x["tokens_out"].intValue))
+            Text(verbatim: "Токены вход / выход: \(Fmt.number(x["tokens_in"].intValue)) / \(Fmt.number(x["tokens_out"].intValue))")
                 .font(.footnote)
                 .foregroundColor(Brand.muted)
         }

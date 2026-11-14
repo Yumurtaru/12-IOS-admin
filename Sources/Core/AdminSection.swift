@@ -107,7 +107,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// Корневой экран раздела. AnyView — чтобы 29 веток не перегружали проверку типов.
+    /// Корневой экран раздела. AnyView — чтобы ветки не перегружали проверку типов.
     /// Экран НЕ содержит NavigationStack: его даёт вкладка или меню «Ещё».
     /// `subtab` — rawValue вкладки внутри раздела (NotifyCategory.subtab); сейчас его
     /// понимают «Заявки магазинов» (registrations/publish/documents), «Сообщения

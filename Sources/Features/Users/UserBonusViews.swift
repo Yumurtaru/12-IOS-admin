@@ -260,7 +260,7 @@ struct UsersBonusSheet: View {
             Text("Организация, где можно потратить баллы")
         } footer: {
             if let sid = shopId {
-                Text("Выбрано: " + shopName + " (#" + String(sid) + ")")
+                Text(verbatim: "Выбрано: \(shopName) (#\(sid))")
             }
         }
         .disabled(op.locked)

@@ -143,8 +143,7 @@ struct AppsInstallsSummary: View {
                 .font(.footnote)
                 .foregroundColor(Brand.muted)
         } else {
-            Text("Всего установок: " + Fmt.number(loader.data["total_installs"].intValue)
-                 + " · людей: " + Fmt.number(loader.data["total_users"].intValue))
+            Text(verbatim: "Всего установок: \(Fmt.number(loader.data["total_installs"].intValue)) · людей: \(Fmt.number(loader.data["total_users"].intValue))")
                 .font(.subheadline.weight(.semibold))
             ForEach(Array(groups.enumerated()), id: \.offset) { pair in
                 AppsInstallGroupCard(group: pair.element)
@@ -245,7 +244,7 @@ struct AppsInstallVersionLine: View {
                 StatusBadge(b.0, color: b.1)
             }
             Spacer(minLength: 6)
-            Text(Fmt.number(count) + " · " + String(total > 0 ? count * 100 / total : 0) + "%")
+            Text(verbatim: "\(Fmt.number(count)) · \(total > 0 ? count * 100 / total : 0)%")
                 .font(.footnote)
                 .monospacedDigit()
                 .foregroundColor(Brand.muted)
