@@ -144,7 +144,8 @@ struct AssistantRootView: View {
         KVRow("Фото", o["vision"].boolValue ? "передаются" : "нет, описание по данным товара")
         KVRow("Модель помощника", o["models"]["support"].string)
         KVRow("Модель описаний и модерации", o["models"]["desc"].string)
-        if let cert = o["cert"]["text"].nonEmptyString {
+        if o["provider"].string == "gigachat" || o["cert"]["warn"].boolValue,
+           let cert = o["cert"]["text"].nonEmptyString {
             Text(cert)
                 .font(.footnote)
                 .foregroundColor(o["cert"]["warn"].boolValue ? Brand.red : Brand.muted)

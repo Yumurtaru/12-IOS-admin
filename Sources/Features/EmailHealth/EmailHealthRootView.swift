@@ -150,8 +150,13 @@ struct EmailHealthRootView: View {
                 ForEach(model.items, id: \.stableID) { item in
                     EmailHealthRow(item: item) {
                         let email = item["email"].stringValue
-                        try await API.shared.post("/api/admin/email-health/unsuppress", body: ["email": email])
-                        resultNote = "Разблокирован: " + email + " — письма снова будут уходить"
+                        let r = try await API.shared.post("/api/admin/email-health/unsuppress", body: ["email": email])
+                        // removed == false: адреса уже нет в списке (ключа нет - старый сервер, считаем снятым).
+                        if !r["removed"].isNull && !r["removed"].boolValue {
+                            resultNote = "Адреса уже нет в списке: " + email
+                        } else {
+                            resultNote = "Разблокирован: " + email + " — письма снова будут уходить"
+                        }
                         await model.refresh()
                     }
                     .task { await model.loadMoreIfNeeded(current: item) }

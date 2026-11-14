@@ -275,7 +275,13 @@ struct CallVisibilityView: View {
             message: "Забранный заказ вернётся в «готов». Причина (увидят заведение и курьер):",
             placeholder: "Причина", multiline: true, submitTitle: "Закрыть вызов", destructive: true
         ) { note in
-            try await API.shared.post("/api/admin/pool/calls/" + String(id) + "/close", body: ["note": note])
+            do {
+                try await API.shared.post("/api/admin/pool/calls/" + String(id) + "/close", body: ["note": note])
+            } catch let e as APIError {
+                // 409: вызов уже закрыт или изменился - перечитать экран, текст ошибки покажет лист.
+                if e.status == 409 { await l.load() }
+                throw e
+            }
             await l.load()
         }
     }
