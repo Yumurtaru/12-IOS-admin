@@ -64,6 +64,12 @@ enum MoneyOp {
         return e.details["code"].string == "idempotency_unavailable" || e.message.contains("Не удалось принять запрос")
     }
 
+    /// 503 `code: "bonus_unavailable"` (бонусы клиентов недоступны): сервер отказал до записи,
+    /// операция точно НЕ проведена — обычная ошибка, не неизвестный исход.
+    static func isBonusUnavailable(_ e: APIError) -> Bool {
+        e.status == 503 && e.details["code"].string == "bonus_unavailable"
+    }
+
     /// Ошибка с понятным текстом для 503 `idempotency_unavailable` (статус и детали прежние).
     static func unavailableError(_ e: APIError) -> APIError {
         APIError.server(status: 503, message: unavailableText, details: e.details)
@@ -216,6 +222,8 @@ enum MoneyOpStore {
     static func shopTopup(_ shopId: Int) -> String { "shop_topup_" + String(shopId) }
     /// Корректировка кошелька клиента (user-wallets/{id}/correct).
     static func userWallet(_ userId: Int) -> String { "user_wallet_" + String(userId) }
+    /// Бонусы клиента: начисление/снятие в организации (users/{id}/bonus).
+    static func userBonus(_ userId: Int) -> String { "user_bonus_" + String(userId) }
     /// Поправка расчёта курьера (pool/couriers/{id}/adjust).
     static func courierAdjust(_ courierId: Int) -> String { "courier_adjust_" + String(courierId) }
     /// Выплата (payouts): магазин выбирается в форме.
@@ -554,6 +562,12 @@ final class MoneyOpGuard: ObservableObject {
             unsentBody = lastPlain
             MoneyOpStore.remove(scope)
             return .failed(shown)
+        }
+        if MoneyOp.isBonusUnavailable(e), !afterUnknown {
+            // Отказ до записи: форма свободна, ключ прежний (пока форму не изменили).
+            unsentBody = lastPlain
+            MoneyOpStore.remove(scope)
+            return .failed(e)
         }
         if MoneyOp.isUnknown(e) {
             freeze(MoneyOp.unknownText(e), wait: MoneyOpGuard.resendDelay, allowed: true, autoCheck: false)

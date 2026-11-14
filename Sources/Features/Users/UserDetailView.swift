@@ -14,7 +14,15 @@ struct UserDetailView: View {
     let onChanged: (() -> Void)?
 
     @StateObject private var loader: ObjectLoader
-    @State private var askBlockReason = false
+    @State private var sheet: UserSheet?
+    @State private var notice: String?
+
+    /// Единственный лист карточки (два .sheet на одной вью не работают).
+    enum UserSheet: String, Identifiable {
+        case block
+        case bonus
+        var id: String { rawValue }
+    }
 
     init(id: Int, onChanged: (() -> Void)? = nil) {
         self.id = id
@@ -36,12 +44,34 @@ struct UserDetailView: View {
         .navigationTitle(screenTitle)
         .navigationBarTitleDisplayMode(.inline)
         .task { await loader.loadIfNeeded() }
-        .sheet(isPresented: $askBlockReason) {
+        .sheet(item: $sheet) { which in
+            sheetContent(which)
+        }
+        .alert(notice ?? "", isPresented: noticeShown) {
+            Button("OK", role: .cancel) {}
+        }
+    }
+
+    private var noticeShown: Binding<Bool> {
+        Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })
+    }
+
+    @ViewBuilder
+    private func sheetContent(_ which: UserSheet) -> some View {
+        switch which {
+        case .block:
             TextInputSheet(title: "Заблокировать",
                            message: "Причина блокировки (необязательно). Пользователь не сможет войти и оформлять заказы.",
                            placeholder: "нарушение правил…", multiline: true,
                            submitTitle: "Заблокировать", minLength: 0, destructive: true) { text in
                 try await block(reason: text)
+            }
+        case .bonus:
+            UsersBonusSheet(userId: id, userName: user["name"].stringValue,
+                            shops: user["bonus_shops"].array) { text in
+                // Пустой текст — лист закрыли при неизвестном исходе: только обновить.
+                if !text.isEmpty { notice = text }
+                await afterChange()
             }
         }
     }
@@ -60,7 +90,12 @@ struct UserDetailView: View {
             }
             UsersRolesSection(roles: user["roles"].array)
             statsSection
-            UsersWalletSection(userId: id)
+            // Group: на iOS 16 ViewBuilder принимает не больше 10 прямых элементов (бонусы добавили два).
+            Group {
+                UsersBonusSection(shops: user["bonus_shops"].array) { sheet = .bonus }
+                UsersBonusHistorySection(rows: user["bonus_history"].array)
+                UsersWalletSection(userId: id)
+            }
             UsersShopsSection(shops: user["shops"].array)
             UsersOrdersSection(orders: user["orders"].array)
             actionsSection
@@ -99,7 +134,7 @@ struct UserDetailView: View {
                 }
             } else {
                 Button(role: .destructive) {
-                    askBlockReason = true
+                    sheet = .block
                 } label: {
                     Label("Заблокировать", systemImage: "hand.raised")
                         .frame(maxWidth: .infinity)

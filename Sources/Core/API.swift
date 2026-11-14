@@ -487,7 +487,7 @@ final class API {
         // Кладём его в details, чтобы MoneyOp.idemReply видел `details["code"]`. Только для
         // idempotency_* и не для 422 (там details читают как ошибки полей формы).
         if status != 422, details.object.isEmpty,
-           let code = j["code"].nonEmptyString, code.hasPrefix("idempotency_") {
+           let code = j["code"].nonEmptyString, (code.hasPrefix("idempotency_") || code == "bonus_unavailable") {
             details = .object(["code": .string(code)])
         }
         return (okFlag, j["data"], j["meta"], message, details)
