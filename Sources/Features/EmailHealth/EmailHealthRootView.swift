@@ -83,10 +83,11 @@ struct EmailHealthRootView: View {
                 TextEditor(text: $bounceText)
                     .frame(minHeight: 110)
             }
-            ActionButton("Найти адреса и добавить", systemImage: "envelope.open", style: .bordered, fullWidth: true,
+            ActionButton("Найти адреса и добавить", systemImage: "envelope.open", style: .bordered,
                          confirm: ConfirmAction(title: "Заблокировать найденные адреса?",
                                                 message: "Адреса из письма попадут в список «не доходят», площадка перестанет на них писать.",
-                                                confirmLabel: "Найти и заблокировать", destructive: true)) {
+                                                confirmLabel: "Найти и заблокировать", destructive: true),
+                         fullWidth: true) {
                 try await addFromBounce()
             }
             .disabled(bounceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -95,10 +96,10 @@ struct EmailHealthRootView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             ActionButton("Заблокировать адрес", systemImage: "envelope.badge.shield.half.filled", style: .bordered,
-                         fullWidth: true,
                          confirm: ConfirmAction(title: "Заблокировать адрес?",
                                                 message: "Письма на этот адрес больше не будут уходить, а у человека в профиле появится «почта не работает».",
-                                                confirmLabel: "Заблокировать", destructive: true)) {
+                                                confirmLabel: "Заблокировать", destructive: true),
+                         fullWidth: true) {
                 try await addOne()
             }
             .disabled(oneEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
