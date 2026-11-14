@@ -95,8 +95,17 @@ struct SettingsRootView: View {
         .refreshable { await reload() }
     }
 
+    /// Подсказка поля: ключ Claude, заданный в файле секретов сервера, важнее поля (как на сайте).
+    private func shownField(_ field: SettingsField) -> SettingsField {
+        if field.key == "anthropic_api_key", data["_ai_env_key"].boolValue {
+            return field.withHint("ключ уже задан в файле секретов сервера (ANTHROPIC_API_KEY) — используется он, это поле не действует")
+        }
+        return field
+    }
+
     @ViewBuilder
-    private func fieldView(_ field: SettingsField) -> some View {
+    private func fieldView(_ raw: SettingsField) -> some View {
+        let field = shownField(raw)
         if secretKeys.contains(field.key) {
             SettingsSecretRow(field: field,
                               masked: original[field.key] ?? "",
@@ -370,6 +379,12 @@ struct SettingsValueRow: View {
                     Text(o.label).tag(o.value)
                 }
             }
+        case .area:
+            VStack(alignment: .leading, spacing: 4) {
+                FieldTitle(field.label)
+                TextEditor(text: $value)
+                    .frame(minHeight: 110)
+            }
         default:
             VStack(alignment: .leading, spacing: 4) {
                 FieldTitle(field.label)
@@ -382,8 +397,10 @@ struct SettingsValueRow: View {
     }
 
     private var isFreeText: Bool {
-        if case .text = field.kind { return true }
-        return false
+        switch field.kind {
+        case .text, .area: return true
+        default: return false
+        }
     }
 
     private var keyboard: UIKeyboardType {

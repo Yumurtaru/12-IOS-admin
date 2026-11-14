@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Вкладки раздела «Приложения».
 enum AppsTab: String, CaseIterable, Identifiable {
-    case overview, clients, notify
+    case overview, clients, installs, notify
 
     var id: String { rawValue }
 
@@ -10,6 +10,7 @@ enum AppsTab: String, CaseIterable, Identifiable {
         switch self {
         case .overview: return "Обзор"
         case .clients: return "Клиенты"
+        case .installs: return "Установки"
         case .notify: return "Уведомить"
         }
     }
@@ -21,6 +22,7 @@ enum AppsTab: String, CaseIterable, Identifiable {
 /// Ручки (только администратор площадки, конверт {ok,data}):
 ///   GET  /api/admin/app-clients/summary   — обзор;
 ///   GET  /api/admin/app-clients           — клиенты с приложениями (50 на страницу);
+///   GET  /api/admin/app-installs/summary, /api/admin/app-installs — вкладка «Установки» (только чтение);
 ///   POST /api/admin/app-notify/preview    — предпросмотр рассылки;
 ///   POST /api/admin/app-notify/send       — отправка пачками по 100 (курсор `after`, `guard_key`).
 /// Старый сервер без этих ручек (404) → «Обновите сайт», приложение не падает.
@@ -34,6 +36,8 @@ struct AppsRootView: View {
     @State private var tab: AppsTab = .overview
     @StateObject private var overview = AppsOverviewModel()
     @StateObject private var clients = AppClientsModel()
+    @StateObject private var installsList = AppsInstallsView.makeList()
+    @StateObject private var installsSummary = AppsInstallsView.makeSummary()
     @StateObject private var notify = AppsNotifyModel()
 
     init(openId: Int? = nil) {
@@ -64,6 +68,8 @@ struct AppsRootView: View {
             AppsOverviewView(model: overview)
         case .clients:
             AppsClientsView(model: clients)
+        case .installs:
+            AppsInstallsView(list: installsList, summary: installsSummary)
         case .notify:
             AppsNotifyView(model: notify)
         }

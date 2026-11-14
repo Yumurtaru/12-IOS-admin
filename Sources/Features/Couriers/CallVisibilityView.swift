@@ -32,6 +32,11 @@ enum CallVisibility {
         return e.message.contains("Эндпоинт")
     }
 
+    /// Живой вызов: его можно закрыть (searching / accepted / picked, как на сайте).
+    static func isLive(_ status: String?) -> Bool {
+        ["searching", "accepted", "picked"].contains(status ?? "")
+    }
+
     /// «Посылка» / «Доставка из заведения».
     static func kindLabel(_ kind: String?) -> String {
         switch kind ?? "" {
@@ -230,6 +235,8 @@ struct CallVisibilityView: View {
     let title: String?
 
     @StateObject private var loader: CallVisibilityLoader
+    /// Лист «Закрыть вызов» (причина обязательна).
+    @State private var closeShown = false
 
     init(callId: Int, title: String? = nil) {
         self.callId = callId
@@ -256,6 +263,21 @@ struct CallVisibilityView: View {
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await loader.load() }
         .task { await loader.loadIfNeeded() }
+        .sheet(isPresented: $closeShown) { closeSheet }
+    }
+
+    /// POST /api/admin/pool/calls/{id}/close {note}; после — перечитать вызов.
+    private var closeSheet: some View {
+        let id = callId
+        let l = loader
+        return TextInputSheet(
+            title: "Закрыть вызов №" + String(id),
+            message: "Забранный заказ вернётся в «готов». Причина (увидят заведение и курьер):",
+            placeholder: "Причина", multiline: true, submitTitle: "Закрыть вызов", destructive: true
+        ) { note in
+            try await API.shared.post("/api/admin/pool/calls/" + String(id) + "/close", body: ["note": note])
+            await l.load()
+        }
     }
 
     @ViewBuilder
@@ -367,6 +389,13 @@ struct CallVisibilityView: View {
             }
             if let m = call["search_minutes"].int, m > 0 {
                 KVRow("Время поиска", String(m) + " мин")
+            }
+            if CallVisibility.isLive(call["status"].string) {
+                Button(role: .destructive) {
+                    closeShown = true
+                } label: {
+                    Label("Закрыть вызов", systemImage: "xmark.circle")
+                }
             }
         }
     }

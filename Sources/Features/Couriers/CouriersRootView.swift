@@ -53,7 +53,8 @@ enum CouriersTab: String, CaseIterable, Identifiable, Hashable {
 /// кнопка с глазом в шапке раздела (по номеру заказа), строка в карточках проблем и жалоб,
 /// тап по доставке в карточке курьера. Есть ли ручка, проверяется при входе в раздел
 /// (CallVisibilitySupport); на старом сервере входов нет.
-/// Список вызовов и настройки раздела пока только на сайте.
+/// «Настройки» (GET/POST /api/admin/pool/settings, PoolSettingsView) — кнопка с шестерёнкой в шапке раздела.
+/// Закрыть живой вызов (POST …/calls/{id}/close) — на экране «Кто видит вызов». Список вызовов пока только на сайте.
 struct CouriersRootView: View {
     let openId: Int?
 
@@ -99,6 +100,14 @@ struct CouriersRootView: View {
         .safeAreaInset(edge: .top) { tabPicker }
         .navigationDestination(isPresented: $deepLinkActive) { deepLinkDestination }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                NavigationLink {
+                    PoolSettingsView()
+                } label: {
+                    Label("Настройки", systemImage: "gearshape")
+                }
+                .accessibilityLabel("Настройки курьеров")
+            }
             ToolbarItem(placement: .primaryAction) {
                 if visibility.showsEntry {
                     Button {

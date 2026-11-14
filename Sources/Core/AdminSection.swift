@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 29 разделов админки — в порядке меню сайта (admin/partials/layout.php).
+/// Разделы админки — в порядке меню сайта (admin/partials/layout.php).
 ///
 /// `rawValue` — ключ раздела сайта (`$adminSection`), он же используется в
 /// deep link `yumurta-admin://section/<rawValue>/<id>` и в уведомлениях.
@@ -22,6 +22,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
     // «Приложения» (статистика клиентов и приложений, рассылка «обновите / установите»):
     // ручки /api/admin/app-clients*, /api/admin/app-notify*; виден в «Ещё».
     case apps
+    case stationCrashes = "station-crashes"
     case reports, audit, staff, settings, database, parser
 
     var id: String { rawValue }
@@ -53,6 +54,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .shopSupport: return "Сообщения продавцам"
         case .couriers: return "Курьеры"
         case .apps: return "Приложения"
+        case .stationCrashes: return "Сбои касс"
         case .reports: return "Отчёты"
         case .audit: return "Журнал"
         case .staff: return "Администраторы"
@@ -89,6 +91,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .shopSupport: return "bubble.left.and.bubble.right"
         case .couriers: return "car"
         case .apps: return "iphone"
+        case .stationCrashes: return "exclamationmark.octagon"
         case .reports: return "chart.pie"
         case .audit: return "clock.arrow.circlepath"
         case .staff: return "checkmark.shield"
@@ -141,6 +144,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         // openId — user_id курьера (его карточка открывается сразу), subtab — вкладка раздела.
         case .couriers: return AnyView(CouriersRootView(openId: openId, subtab: subtab))
         case .apps: return AnyView(AppsRootView(openId: openId))
+        case .stationCrashes: return AnyView(StationCrashesRootView(openId: openId))
         case .reports: return AnyView(ReportsRootView(openId: openId))
         case .audit: return AnyView(AuditRootView(openId: openId))
         case .staff: return AnyView(StaffRootView(openId: openId))
