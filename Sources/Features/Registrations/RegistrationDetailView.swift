@@ -222,7 +222,10 @@ struct RegistrationDetailView: View {
                 if items.isEmpty || page >= pages { break }
                 page += 1
             } catch {
-                if APIError.isCancellation(error) { return }
+                if APIError.isCancellation(error) {
+                    if state == .loading { state = .idle }  // task отменён: без сброса спиннер навсегда
+                    return
+                }
                 state = reg.isNull ? .failed(APIError.describe(error)) : .loaded
                 return
             }

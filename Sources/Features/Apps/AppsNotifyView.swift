@@ -210,7 +210,8 @@ final class AppsNotifyModel: ObservableObject {
                 self.body = String(p.defaultBody.prefix(AppsNotifyModel.bodyLimit))
             }
         } catch {
-            guard gen == previewGen, !APIError.isCancellation(error) else { return }
+            guard gen == previewGen else { return }
+            if APIError.isCancellation(error) { previewLoading = false; return }
             previewError = AppsFmt.errorText(error)
             previewLoading = false
         }

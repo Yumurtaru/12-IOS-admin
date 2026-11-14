@@ -126,7 +126,12 @@ final class AppsOverviewModel: ObservableObject {
             refreshError = nil
             state = .loaded
         } catch {
-            guard gen == generation, !APIError.isCancellation(error) else { return }
+            guard gen == generation else { return }
+            if APIError.isCancellation(error) {
+                // Экран ушёл (task отменён): без сброса спиннер остался бы навсегда, loadIfNeeded ждёт .idle.
+                if state == .loading { state = .idle }
+                return
+            }
             let msg = AppsFmt.errorText(error)
             if data.isNull {
                 state = .failed(msg)

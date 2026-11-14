@@ -597,8 +597,7 @@ struct CourierProblemLine: View {
                 StatusBadge(CourierIssuesFormat.problemStatus(problem["status"].string),
                             color: CourierIssuesFormat.problemColor(problem["status"].string))
             }
-            Text(problem["shop"].stringValue + " · доставка №" + problem["call_id"].stringValue
-                 + " · " + Fmt.money(problem["amount"]))
+            Text("\(problem["shop"].stringValue) · доставка №\(problem["call_id"].stringValue) · \(Fmt.money(problem["amount"]))")
                 .font(.caption)
                 .foregroundColor(Brand.muted)
             if let t = problem["comment"].nonEmptyString {
@@ -696,7 +695,12 @@ final class CourierHistoryLoader: ObservableObject {
             complete = done
             state = .loaded
         } catch {
-            guard gen == generation, !APIError.isCancellation(error) else { return }
+            guard gen == generation else { return }
+            if APIError.isCancellation(error) {
+                // Экран ушёл (task отменён): без сброса спиннер остался бы навсегда, loadIfNeeded ждёт .idle.
+                if state == .loading { state = .idle }
+                return
+            }
             if found.isEmpty {
                 state = .failed(APIError.describe(error))
             } else {

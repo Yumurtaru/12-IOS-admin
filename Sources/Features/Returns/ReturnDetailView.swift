@@ -218,7 +218,10 @@ struct ReturnDetailView: View {
                 refreshError = "Заявка не найдена в списке возвратов"
             }
         } catch {
-            if APIError.isCancellation(error) { return }
+            if APIError.isCancellation(error) {
+                if state == .loading { state = .idle }  // task отменён: без сброса спиннер навсегда
+                return
+            }
             let msg = APIError.describe(error)
             if row.isNull { state = .failed(msg) } else { refreshError = msg }
         }

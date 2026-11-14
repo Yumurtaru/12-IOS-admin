@@ -463,6 +463,9 @@ struct PayoutsCreateSheet: View {
         } catch {
             if !APIError.isCancellation(error) {
                 shopsState = .failed(APIError.describe(error))
+            } else if shopsState == .loading {
+                // task отменён — без сброса «Загружаю магазины…» осталось бы навсегда.
+                shopsState = .idle
             }
         }
     }

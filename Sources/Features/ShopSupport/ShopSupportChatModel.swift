@@ -189,7 +189,11 @@ final class ShopSupportChatModel: ObservableObject {
             state = .loaded
             await markReadIfNeeded()
         } catch {
-            guard gen == generation, !APIError.isCancellation(error) else { return }
+            guard gen == generation else { return }
+            if APIError.isCancellation(error) {
+                if state == .loading { state = .idle }  // task отменён: без сброса спиннер навсегда
+                return
+            }
             if messages.isEmpty {
                 state = .failed(APIError.describe(error))
             } else {

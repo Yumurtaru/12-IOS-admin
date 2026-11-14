@@ -292,7 +292,8 @@ struct StaffAddSheet: View {
             results = data.array
             searched = true
         } catch {
-            guard gen == generation, !APIError.isCancellation(error) else { return }
+            guard gen == generation else { return }
+            if APIError.isCancellation(error) { searching = false; return }
             searchError = APIError.describe(error)
         }
         searching = false

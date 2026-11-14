@@ -333,7 +333,8 @@ struct GiveawayDrawSheet: View {
             total = stats.all ?? d["total"].int
             withApp = d["with_app"].int
         } catch {
-            guard gen == countGeneration, !APIError.isCancellation(error) else { return }
+            guard gen == countGeneration else { return }
+            if APIError.isCancellation(error) { counting = false; return }
             total = nil
             withApp = nil
             countError = APIError.describe(error)

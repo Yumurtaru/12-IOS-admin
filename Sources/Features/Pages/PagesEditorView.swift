@@ -141,7 +141,10 @@ struct PagesEditorView: View {
             savedContent = content
             state = .loaded
         } catch {
-            if APIError.isCancellation(error) { return }
+            if APIError.isCancellation(error) {
+                if state == .loading { state = .idle }  // task отменён: без сброса спиннер навсегда
+                return
+            }
             if page.isNull {
                 state = .failed(APIError.describe(error))
             } else {

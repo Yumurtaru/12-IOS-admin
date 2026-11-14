@@ -112,7 +112,10 @@ struct CourierIssueDetailView: View {
             refreshError = nil
             state = .loaded
         } catch {
-            if APIError.isCancellation(error) { return }
+            if APIError.isCancellation(error) {
+                if state == .loading { state = .idle }  // task отменён: без сброса спиннер навсегда
+                return
+            }
             let text = APIError.describe(error)
             if item.isNull {
                 state = .failed(text)

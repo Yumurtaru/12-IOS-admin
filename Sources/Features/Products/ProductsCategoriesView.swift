@@ -168,7 +168,12 @@ final class ProductsLinksModel: ObservableObject {
             }
             state = items.isEmpty ? .empty(nil) : .loaded
         } catch {
-            guard gen == generation, !APIError.isCancellation(error) else { return }
+            guard gen == generation else { return }
+            if APIError.isCancellation(error) {
+                // Экран ушёл (task отменён): без сброса спиннер остался бы навсегда.
+                if state == .loading { state = .idle }
+                return
+            }
             state = .failed(APIError.describe(error))
         }
     }

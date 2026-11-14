@@ -192,7 +192,11 @@ final class CallVisibilityLoader: ObservableObject {
             refreshError = nil
             state = .loaded
         } catch {
-            guard gen == generation, !APIError.isCancellation(error) else { return }
+            guard gen == generation else { return }
+            if APIError.isCancellation(error) {
+                if state == .loading { state = .idle }  // task отменён: без сброса спиннер навсегда
+                return
+            }
             if CallVisibility.isNoRoute(error) {
                 CallVisibilitySupport.shared.markMissing()
                 data = .null
