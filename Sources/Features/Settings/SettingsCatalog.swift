@@ -163,13 +163,15 @@ enum SettingsCatalog {
                       note: "Эти ссылки показываются в футере сайта, в баннере «Скачать приложение» на телефоне и в панели продавца. Пустое поле = встроенный адрес (тот, что действует сейчас). Чтобы убрать ссылку совсем, впишите любой текст без http:// — например «нет».",
                       fields: [
             SettingsField("app_link_client_ios", "Приложение покупателя — App Store", kind: .url),
-            SettingsField("app_link_client_android", "Приложение покупателя — RuStore", kind: .url),
+            // Android раздаётся с сайта (APK в /downloads/apps, решение владельца 16.11) — подписи без RuStore.
+            SettingsField("app_link_client_android", "Приложение покупателя — Android",
+                          hint: "ссылка на скачивание с сайта, например https://yumurta.ru/download/app/client", kind: .url),
             SettingsField("app_link_seller_ios", "Приложение продавца — App Store", kind: .url),
-            SettingsField("app_link_seller_android", "Приложение продавца — RuStore",
-                          hint: "пока пусто: сборки продавца для Android в магазине нет", kind: .url),
+            SettingsField("app_link_seller_android", "Приложение продавца — Android",
+                          hint: "ссылка на скачивание с сайта, например https://yumurta.ru/download/app/seller", kind: .url),
             SettingsField("app_link_courier_ios", "Приложение курьера — App Store", kind: .url),
-            SettingsField("app_link_courier_android", "Приложение курьера — RuStore / Google Play",
-                          hint: "пусто — «Стать курьером» ведёт на сайт /kurer", kind: .url),
+            SettingsField("app_link_courier_android", "Приложение курьера — Android",
+                          hint: "ссылка на скачивание с сайта, например https://yumurta.ru/download/app/courier", kind: .url),
         ]),
         SettingsGroup("Яндекс.Карты (зоны доставки)", fields: [
             SettingsField("yandex_maps_key", "Ключ Яндекс.Карт (JS API)",
@@ -382,7 +384,7 @@ enum SettingsCatalog {
         ]),
     ]
 
-    private static let apkHint = "как в RuStore (Подпись приложения), apksigner verify --print-certs app.apk или keytool -list -v -keystore <ключ выпуска>; двоеточия можно"
+    private static let apkHint = "apksigner verify --print-certs app.apk или keytool -list -v -keystore <ключ выпуска>; двоеточия можно"
 
     /// Все ключи, которые показывает сайт.
     static var knownKeys: Set<String> {
