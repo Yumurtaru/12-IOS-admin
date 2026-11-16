@@ -78,9 +78,11 @@ enum MoneyOp {
     /// Можно ли при `idem == true` молча повторить запрос тем же ключом и телом:
     /// обрыв, таймаут, непонятный ответ, 5xx (кроме 503 `idempotency_unavailable`) и 409
     /// `idempotency_in_progress`. Отмена, `idempotency_unknown_outcome`, 422 `idempotency_key_reused`
-    /// и любой 4xx — нет.
+    /// и любой 4xx — нет. 503 `bonus_unavailable` — тоже нет: это отказ до записи (операция не
+    /// проведена), а не неизвестный исход; с П-80 (`idem` в GET /api/admin/users/{id}) автоповтор
+    /// включается и у бонусов клиента, и без этой проверки отказ после 2 повторов замораживал форму.
     static func isAutoRetryable(_ e: APIError) -> Bool {
-        if isIdemUnavailable(e) { return false }
+        if isIdemUnavailable(e) || isBonusUnavailable(e) { return false }
         if let reply = idemReply(e) { return reply == .inProgress }
         switch e {
         case .cancelled: return false

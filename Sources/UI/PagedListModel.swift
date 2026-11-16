@@ -58,6 +58,12 @@ final class PagedListModel: ObservableObject {
 
     private var page = 1
     private var generation = 0
+    /// Аудит 2026-11: строк, убранных `remove(id:)` после загрузки (одобрили / отклонили в очереди,
+    /// удалили): сервер сдвинул следующие страницы на столько же, и страница page+1 пропустила бы
+    /// их. `loadMore` отступает на нужное число страниц назад (дубли отсеет appendUnique).
+    private var removedSinceLoad = 0
+    /// Строк на первой странице — размер страницы, если ручка не принимает `perPage`.
+    private var firstPageCount = 0
     private var searchTask: Task<Void, Never>?
 
     /// - Parameters:
@@ -120,18 +126,33 @@ final class PagedListModel: ObservableObject {
         isLoadingMore = true
         loadMoreError = nil
         let gen = generation
-        let nextPage = page + 1
-        do {
-            let res = try await API.shared.getResult(path, query: query(page: nextPage))
-            guard gen == generation else { return }
-            let newItems = extractItems(res.data)
-            appendUnique(newItems)
-            page = nextPage
-            updatePaging(data: res.data, meta: res.meta, received: newItems.count)
-        } catch {
-            if gen == generation && !APIError.isCancellation(error) {
-                loadMoreError = APIError.describe(error)
+        if removedSinceLoad > 0 {
+            // Убранные строки сдвинули страницы сервера — отступить на столько страниц, сколько они заняли.
+            let per = max(1, perPage?.value ?? firstPageCount)
+            page = max(0, page - (removedSinceLoad + per - 1) / per)
+            removedSinceLoad = 0
+        }
+        var rounds = 0
+        while true {
+            let nextPage = page + 1
+            do {
+                let res = try await API.shared.getResult(path, query: query(page: nextPage))
+                guard gen == generation else { return }
+                let before = items.count
+                let newItems = extractItems(res.data)
+                appendUnique(newItems)
+                page = nextPage
+                updatePaging(data: res.data, meta: res.meta, received: newItems.count)
+                rounds += 1
+                // Страница целиком из уже показанных (сдвиг: сверху появились новые строки) — список не вырос,
+                // последняя строка та же, и подгрузка по её появлению больше не сработала бы. Берём следующую.
+                if items.count == before && hasMore && rounds < 3 { continue }
+            } catch {
+                if gen == generation && !APIError.isCancellation(error) {
+                    loadMoreError = APIError.describe(error)
+                }
             }
+            break
         }
         if gen == generation { isLoadingMore = false }
     }
@@ -145,7 +166,9 @@ final class PagedListModel: ObservableObject {
     /// Убрать строку по id (удалили / ушла из фильтра).
     func remove(id: Int) {
         let key = String(id)
+        let before = items.count
         items.removeAll { $0.stableID == key }
+        if items.count < before { removedSinceLoad += before - items.count }
         if let t = total { total = max(0, t - 1) }
         if items.isEmpty && state == .loaded { state = .empty(nil) }
     }
@@ -187,6 +210,8 @@ final class PagedListModel: ObservableObject {
             items = []
             appendUnique(list)
             page = 1
+            removedSinceLoad = 0
+            firstPageCount = list.count
             lastData = res.data
             lastMeta = res.meta
             refreshError = nil
