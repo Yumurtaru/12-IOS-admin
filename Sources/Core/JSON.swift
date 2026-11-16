@@ -123,7 +123,9 @@ enum JSON: Decodable, Hashable {
         case .number(let d): return d.isFinite ? d : nil
         case .string(let s):
             let t = s.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
-            return Double(t)
+            // Строки "nan"/"inf" Double() разбирает в NaN/∞ — как и у числа, отдаём nil.
+            guard let d = Double(t), d.isFinite else { return nil }
+            return d
         case .bool(let b): return b ? 1 : 0
         default: return nil
         }
