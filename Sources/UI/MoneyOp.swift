@@ -246,6 +246,12 @@ enum MoneyOpStore {
         return try? JSONDecoder().decode(MoneyOpPending.self, from: data)
     }
 
+    /// Явный выход: неотвеченные денежные операции и данные формы (телефон/почта владельца)
+    /// прежнего администратора не должны открыться следующему вошедшему.
+    static func clearAll() {
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+    }
+
     static func remove(_ scope: String) {
         var all = readAll()
         guard all.removeValue(forKey: scope) != nil else { return }

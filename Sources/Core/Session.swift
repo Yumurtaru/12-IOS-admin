@@ -85,6 +85,8 @@ final class Session: ObservableObject {
         var body: [String: Any?] = [:]
         if let token = AdminPush.deviceToken { body["push_token"] = token }
         _ = try? await API.shared.request("POST", "/api/v1/auth/logout", body: body)
+        // Только при своём «Выйти» (при истёкшей сессии вернётся тот же человек и доведёт операцию).
+        MoneyOpStore.clearAll()
         wipe(notice: nil)
     }
 

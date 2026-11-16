@@ -378,6 +378,10 @@ final class API {
             let response = pair.1
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let json = JSON.parse(data)
+            // 204 No Content — успешное подтверждение без тела: не «непонятный ответ».
+            if status == 204 {
+                return APIResult(data: .null, meta: .null, raw: .null, status: status)
+            }
             let env = API.unwrap(json, status: status)
             // Ответ 200 не-JSON (страница Wi-Fi-авторизации, HTML прокси) успехом не считаем:
             // раньше он проходил как «готово» с пустыми данными, и проверка ниже не срабатывала.
@@ -424,6 +428,8 @@ final class API {
         } catch let e as APIError {
             switch e {
             case .offline, .cancelled: return .failed(e)
+            // HTML хостинга/пустой ответ на продление — сбой связи, а не отказ: сессию не сбрасываем.
+            case .badResponse: return .failed(e)
             case .server(let s, _, _) where s >= 500 || s == 429: return .failed(e)
             default: return .rejected
             }
