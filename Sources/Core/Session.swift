@@ -84,7 +84,7 @@ final class Session: ObservableObject {
     func signOut() async {
         var body: [String: Any?] = [:]
         if let token = AdminPush.deviceToken { body["push_token"] = token }
-        _ = try? await API.shared.request("POST", "/api/v1/auth/logout", body: body)
+        _ = try? await API.shared.request("POST", "/api/v1/auth/logout", body: body, timeout: 8)   // короткое ожидание: выход не должен висеть до 30 с (+refresh) при плохой связи
         // Только при своём «Выйти» (при истёкшей сессии вернётся тот же человек и доведёт операцию).
         MoneyOpStore.clearAll()
         wipe(notice: nil)

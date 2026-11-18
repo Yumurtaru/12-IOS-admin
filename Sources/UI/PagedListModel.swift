@@ -58,6 +58,8 @@ final class PagedListModel: ObservableObject {
 
     private var page = 1
     private var generation = 0
+    /// Идёт загрузка первой страницы — loadMore в это время не стартует.
+    private var firstPageInFlight = false
     /// Аудит 2026-11: строк, убранных `remove(id:)` после загрузки (одобрили / отклонили в очереди,
     /// удалили): сервер сдвинул следующие страницы на столько же, и страница page+1 пропустила бы
     /// их. `loadMore` отступает на нужное число страниц назад (дубли отсеет appendUnique).
@@ -122,7 +124,9 @@ final class PagedListModel: ObservableObject {
 
     /// Догрузить следующую страницу.
     func loadMore() async {
-        guard hasMore, !isLoadingMore, state == .loaded else { return }
+        // Пока грузится первая страница (поиск/потянуть вниз), старый номер page + новое поколение
+        // пропускали страницы 2…N — подгрузку не начинаем.
+        guard hasMore, !isLoadingMore, !firstPageInFlight, state == .loaded else { return }
         isLoadingMore = true
         loadMoreError = nil
         let gen = generation
@@ -169,7 +173,8 @@ final class PagedListModel: ObservableObject {
         let before = items.count
         items.removeAll { $0.stableID == key }
         if items.count < before { removedSinceLoad += before - items.count }
-        if let t = total { total = max(0, t - 1) }
+        // Счётчик уменьшаем, только если строка действительно убрана (id мог уже не быть в списке).
+        if items.count < before, let t = total { total = max(0, t - 1) }
         if items.isEmpty && state == .loaded { state = .empty(nil) }
     }
 
@@ -200,6 +205,9 @@ final class PagedListModel: ObservableObject {
     private func loadFirstPage(showSpinner: Bool) async {
         generation += 1
         let gen = generation
+        // Флаг держит только последняя загрузка первой страницы (более ранняя устарела по gen).
+        firstPageInFlight = true
+        defer { if gen == generation { firstPageInFlight = false } }
         if showSpinner { state = .loading }
         isLoadingMore = false
         loadMoreError = nil
