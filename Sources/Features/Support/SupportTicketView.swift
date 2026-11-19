@@ -154,7 +154,8 @@ struct SupportTicketView: View {
             do {
                 let r = try await API.shared.post("/api/admin/support/tickets/\(tid)/reply", body: ["message": text])
                 Haptics.success()
-                draft = ""
+                // Текст, набранный во время отправки, не стираем.
+                if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
                 if r["delivered"].bool == false {
                     notice = "Ответ сохранён в переписке, но уведомление до человека не дошло (аккаунт заблокирован или шаблон «Ответ поддержки» выключен)."
                 } else {
